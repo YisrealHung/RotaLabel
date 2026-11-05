@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+.venv/
+venv/
+
+# Local image data and labeling output
+data/
+rotalabel_project/
+bboxer_project/
+runs/
+
+# Editors / OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
