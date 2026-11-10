@@ -549,15 +549,34 @@ class Canvas(QGraphicsView):
             super().mouseDoubleClickEvent(e)
 
     def wheelEvent(self, e):
-        if e.modifiers() & Qt.ShiftModifier:
-            # shift + wheel: scroll horizontally
-            self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - e.angleDelta().y())
+        mods = e.modifiers()
+        if not mods & Qt.ControlModifier:
+            # wheel: scroll vertically; shift + wheel: scroll horizontally (touchpads also send x)
+            self._auto_fit = False
+            dx, dy = e.angleDelta().x(), e.angleDelta().y()
+            if mods & Qt.ShiftModifier:
+                dx, dy = dx or dy, 0
+            hb, vb = self.horizontalScrollBar(), self.verticalScrollBar()
+            hb.setValue(hb.value() - dx)
+            vb.setValue(vb.value() - dy)
             return
+        # ctrl + wheel: zoom
         factor = 1.0015 ** e.angleDelta().y()
         cur = self.transform().m11()
         factor = min(max(factor, 0.02 / cur), 60 / cur)
         self._auto_fit = False
+        # keep the scene point under the cursor fixed (Qt's AnchorUnderMouse relies on the
+        # base mouseMoveEvent, which we override, so anchor manually)
+        vp = e.position()
+        before = self.mapToScene(vp.toPoint())
+        anchor = self.transformationAnchor()
+        self.setTransformationAnchor(QGraphicsView.NoAnchor)
         self.scale(factor, factor)
+        self.setTransformationAnchor(anchor)
+        delta = self.mapFromScene(before) - vp.toPoint()
+        hb, vb = self.horizontalScrollBar(), self.verticalScrollBar()
+        hb.setValue(hb.value() + delta.x())
+        vb.setValue(vb.value() + delta.y())
         self._on_zoom()
 
     def keyPressEvent(self, e):

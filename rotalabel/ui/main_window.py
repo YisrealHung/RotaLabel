@@ -37,7 +37,9 @@ HELP = """
 <tr><td><b>Ctrl+Z / Ctrl+Y</b></td><td>復原 / 重做</td></tr>
 <tr><td><b>A / D</b></td><td>上一張 / 下一張</td></tr>
 <tr><td><b>F</b></td><td>圖片符合視窗</td></tr>
-<tr><td>滾輪 / 中鍵或空白鍵拖曳</td><td>縮放 / 平移</td></tr>
+<tr><td>滾輪 / Shift+滾輪</td><td>上下 / 左右捲動</td></tr>
+<tr><td>Ctrl+滾輪</td><td>縮放</td></tr>
+<tr><td>中鍵或空白鍵拖曳</td><td>平移</td></tr>
 <tr><td><b>L</b></td><td>顯示 / 隱藏標籤文字</td></tr>
 <tr><td><b>Esc</b></td><td>取消選取</td></tr>
 </table>
