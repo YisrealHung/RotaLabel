@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .base import BaseWriter, fmt
+from .base import BaseWriter, clipped_corners, fmt
 
 
 class DotaWriter(BaseWriter):
@@ -13,7 +13,7 @@ class DotaWriter(BaseWriter):
         d.mkdir(parents=True, exist_ok=True)
         lines = []
         for a in anns:
-            coords = [fmt(v) for xy in a.corners() for v in xy]
+            coords = [fmt(v) for xy in clipped_corners(a, width, height) for v in xy]
             name = self.class_names[a.cls].replace(" ", "_")
             lines.append(" ".join(coords + [name, "0"]))
         (d / (Path(filename).stem + ".txt")).write_text("\n".join(lines) + ("\n" if lines else ""),

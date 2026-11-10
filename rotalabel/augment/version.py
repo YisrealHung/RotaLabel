@@ -78,12 +78,17 @@ def make_sample(img: np.ndarray, anns: list[Annotation], cfg: VersionConfig,
     return augment(img, anns, cfg.aug, rng, pre=pre, min_visibility=vis, size=(pw, ph))
 
 
-def _unique_stem(stem: str, used: set[str]) -> str:
+def _output_stems(stem: str, copies: int) -> list[str]:
+    return [stem] + [f"{stem}_aug{k}" for k in range(1, copies)]
+
+
+def _unique_stem(stem: str, used: set[str], copies: int = 1) -> str:
+    """Pick a stem whose output names (stem, stem_aug1, ...) don't clash with any already written."""
     s, i = stem, 1
-    while s in used:
+    while any(n in used for n in _output_stems(s, copies)):
         i += 1
         s = f"{stem}_{i}"
-    used.add(s)
+    used.update(_output_stems(s, copies))
     return s
 
 
@@ -117,10 +122,10 @@ def generate_version(project, cfg: VersionConfig, out_dir: str | Path,
                 continue
             anns = list(project.get(name).annotations)
             copies = max(1, cfg.multiplier) if split == "train" and cfg.aug.any_enabled() else 1
-            stem = _unique_stem(Path(name).stem, used)
-            for k in range(copies):
+            stem = _unique_stem(Path(name).stem, used, copies)
+            for k, out_stem in enumerate(_output_stems(stem, copies)):
                 out_img, out_anns = make_sample(img, anns, cfg, rng, augmented=k > 0)
-                fname = f"{stem}.jpg" if k == 0 else f"{stem}_aug{k}.jpg"
+                fname = f"{out_stem}.jpg"
                 data = imageio.encode(out_img, ".jpg")
                 h, w = out_img.shape[:2]
                 for wr in writers.values():

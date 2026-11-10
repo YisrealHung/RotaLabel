@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 from ..model import OBB
-from .base import BaseWriter, clipped_aabb
+from .base import BaseWriter, clipped_aabb, clipped_corners
 
 
 class CocoWriter(BaseWriter):
@@ -41,7 +41,7 @@ class CocoWriter(BaseWriter):
                 "image_id": img_id,
                 "category_id": a.cls + 1,
                 "bbox": [round(x0, 2), round(y0, 2), round(x1 - x0, 2), round(y1 - y0, 2)],
-                "segmentation": [[round(float(v), 2) for xy in a.corners() for v in xy]],
+                "segmentation": [[round(float(v), 2) for xy in clipped_corners(a, width, height) for v in xy]],
                 "area": round(a.w * a.h if a.kind == OBB else (x1 - x0) * (y1 - y0), 2),
                 "iscrowd": 0,
                 "kind": a.kind,

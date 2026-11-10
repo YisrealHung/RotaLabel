@@ -122,10 +122,11 @@ class MainWindow(QMainWindow):
         # classes
         self.class_panel = ClassPanel()
         self.class_panel.class_selected.connect(self._on_class_selected)
+        self.class_panel.current_class_changed.connect(self._on_current_class)
         self.class_panel.classes_changed.connect(self.canvas.refresh)
         self.class_panel.classes_changed.connect(self._refresh_ann_list)
         self.class_panel.about_to_delete.connect(self.flush)
-        self.class_panel.class_deleted.connect(self._reload_current)
+        self.class_panel.class_deleted.connect(self._on_class_deleted)
         d = self._dock("類別", "classes", self.class_panel, Qt.RightDockWidgetArea)
         d.setMinimumWidth(280)
 
@@ -290,15 +291,18 @@ class MainWindow(QMainWindow):
     def open_project(self, folder: str):
         self.flush()
         try:
-            self.project = Project.open(folder)
+            project = Project.open(folder)
         except OSError as e:
             QMessageBox.critical(self, "開啟失敗", str(e))
             return
+        # detach the old image first so nothing below can edit it or save it into the new project
+        self.canvas.select(None)
+        self.index = -1
+        self.project = project
         self.settings.setValue("last_project", folder)
         self.setWindowTitle(f"RotaLabel — {folder}")
         self.canvas.classes = self.project.classes
         self.class_panel.set_project(self.project)
-        self.index = -1
         self.image_list.blockSignals(True)
         self.image_list.clear()
         for name in self.project.images:
@@ -321,8 +325,8 @@ class MainWindow(QMainWindow):
     def flush(self):
         """Write the canvas boxes back to the project and save."""
         name = self.current_name()
-        if not name:
-            return
+        if not name or self.canvas.pixmap_item is None:
+            return  # image could not be loaded: keep its stored annotations untouched
         ia = self.project.get(name)
         ia.annotations = copy.deepcopy(self.canvas.annotations())
         ia.width, ia.height = self.canvas.img_w, self.canvas.img_h
@@ -338,12 +342,13 @@ class MainWindow(QMainWindow):
         name = self.project.images[idx]
         ia = self.project.get(name)
         w, h = self.canvas.load_image(str(self.project.image_path(name)), ia.annotations)
-        if not w:
-            self.info_label.setText(f"無法讀取：{name}")
-        ia.width, ia.height = w, h
         self.project.settings["last_image"] = name
         self._refresh_ann_list()
         self._update_info()
+        if w:
+            ia.width, ia.height = w, h
+        else:
+            self.info_label.setText(f"無法讀取：{name}（此圖的標註保留不變）")
         self.canvas.setFocus()
 
     def _reload_current(self):
@@ -460,6 +465,14 @@ class MainWindow(QMainWindow):
             a = it.ann
             s += f"   ·   選取 cx {a.cx:.0f}  cy {a.cy:.0f}  w {a.w:.0f}  h {a.h:.0f}  ∠ {a.angle:.1f}°"
         self.info_label.setText(s)
+
+    def _on_current_class(self, idx: int):
+        self.canvas.current_class = idx
+        self._update_info()
+
+    def _on_class_deleted(self):
+        self.canvas.clipboard = []  # copied boxes may refer to class ids that no longer exist
+        self._reload_current()
 
     def _on_class_selected(self, idx: int):
         self.canvas.current_class = idx

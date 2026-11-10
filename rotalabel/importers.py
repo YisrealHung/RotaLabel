@@ -68,8 +68,10 @@ def import_labels(project, label_dir: str | Path, overwrite: bool = True) -> tup
     def resolve_class(key):
         if isinstance(key, str):
             return project.class_index(key, create=True)
-        if names and key < len(names):
-            return project.class_index(str(names[key]), create=True)
+        if names:
+            # ids are mapped by name; ids missing from the names file get their own class
+            name = names[key] if 0 <= key < len(names) else f"class_{key}"
+            return project.class_index(str(name), create=True)
         while key >= len(project.classes):
             project.add_class(f"class_{len(project.classes)}")
         return key

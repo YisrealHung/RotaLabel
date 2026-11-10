@@ -9,7 +9,8 @@ from .delegates import DATA, ClassDelegate
 
 
 class ClassPanel(QWidget):
-    class_selected = Signal(int)
+    class_selected = Signal(int)          # user picked a class (also re-classes the selected box)
+    current_class_changed = Signal(int)   # current row changed programmatically (drawing class only)
     classes_changed = Signal()
     about_to_delete = Signal()
     class_deleted = Signal()
@@ -43,7 +44,7 @@ class ClassPanel(QWidget):
         self.project = project
         self.reload()
         if project and project.classes:
-            self.list.setCurrentRow(0)
+            self._set_row_silently(0)
 
     def reload(self):
         row = self.list.currentRow()
@@ -57,7 +58,14 @@ class ClassPanel(QWidget):
                 self.list.addItem(it)
         self.list.blockSignals(False)
         if self.list.count():
-            self.list.setCurrentRow(min(max(row, 0), self.list.count() - 1))
+            self._set_row_silently(min(max(row, 0), self.list.count() - 1))
+
+    def _set_row_silently(self, row: int):
+        """Change the current row without re-classing the selected box (class_selected is not emitted)."""
+        self.list.blockSignals(True)
+        self.list.setCurrentRow(row)
+        self.list.blockSignals(False)
+        self.current_class_changed.emit(row)
 
     def current(self) -> int:
         return max(self.list.currentRow(), 0)
@@ -81,7 +89,7 @@ class ClassPanel(QWidget):
                 return
             idx = self.project.add_class(name)
             self.reload()
-            self.list.setCurrentRow(idx)
+            self._set_row_silently(idx)
             self.classes_changed.emit()
 
     def rename(self):

@@ -354,7 +354,10 @@ class Canvas(QGraphicsView):
         before = self._snapshot()
         it = None
         for a in self.clipboard:
-            it = self._add_item(copy.deepcopy(a))
+            a = copy.deepcopy(a)
+            if not 0 <= a.cls < len(self.classes):
+                a.cls = self.current_class
+            it = self._add_item(a)
         self._commit(before, "貼上")
         self.select(it)
 
