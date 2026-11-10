@@ -24,6 +24,8 @@ GEOMETRIC = [
     ("shear", "剪切 Shear", "± 度", 45, 10, 0),
     ("scale", "縮放", "± %", 50, 20, 0),
     ("crop", "隨機裁切 (放大)", "最多 %", 80, 20, 0),
+    ("translate_x", "左右平移", "± px", 4096, 50, 0),
+    ("translate_y", "上下平移", "± px", 4096, 50, 0),
 ]
 PHOTOMETRIC = [
     ("brightness", "亮度", "± %", 100, 25, 0),
@@ -94,7 +96,8 @@ class VersionDialog(QDialog):
         form.setSpacing(4)
         form.addWidget(self._split_group(cfg))
         form.addWidget(self._pre_group(cfg))
-        form.addWidget(self._aug_group("3. 幾何擴增 · 框會跟著轉換", FLAGS, GEOMETRIC, cfg.aug))
+        form.addWidget(self._aug_group("3. 幾何擴增 · 框會跟著轉換", FLAGS, GEOMETRIC, cfg.aug,
+                                       tail=self._translate_options))
         form.addWidget(self._aug_group("4. 色彩 / 像素擴增", [], PHOTOMETRIC, cfg.aug))
         form.addWidget(self._output_group(cfg))
         form.addStretch(1)
@@ -204,7 +207,7 @@ class VersionDialog(QDialog):
         f.addRow(_hint("EXIF 方向一律自動校正 (auto-orient)。"))
         return g
 
-    def _aug_group(self, title, flags, params, aug: AugConfig):
+    def _aug_group(self, title, flags, params, aug: AugConfig, tail=None):
         g = QGroupBox(title)
         grid = QGridLayout(g)
         r = 0
@@ -230,7 +233,24 @@ class VersionDialog(QDialog):
             grid.addWidget(QLabel(unit), r, 2)
             self.aug_rows[key] = (cb, sp)
             r += 1
+        if tail:
+            tail(grid, r, aug)
         return g
+
+    def _translate_options(self, grid: QGridLayout, r: int, aug: AugConfig):
+        cb = QCheckBox("允許框超出邊界（超出部分裁掉，依「框保留門檻」決定是否保留）")
+        cb.setChecked(bool(aug.translate_allow_out))
+        grid.addWidget(cb, r, 0, 1, 3)
+        grid.addWidget(_hint("不勾選時會自動限制平移量，讓所有框完整留在圖內。平移以前處理後的圖片像素計算。"),
+                       r + 1, 0, 1, 3)
+        self.aug_rows["translate_allow_out"] = (cb, None)
+        tx, ty = self.aug_rows["translate_x"][0], self.aug_rows["translate_y"][0]
+
+        def sync(*_):
+            cb.setEnabled(tx.isChecked() or ty.isChecked())
+        tx.toggled.connect(sync)
+        ty.toggled.connect(sync)
+        sync()
 
     def _output_group(self, cfg):
         g = QGroupBox("5. 輸出")

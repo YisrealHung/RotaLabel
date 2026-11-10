@@ -9,6 +9,8 @@ import math
 
 import numpy as np
 
+from .. import geometry
+
 
 def translate(tx: float, ty: float) -> np.ndarray:
     return np.array([[1, 0, tx], [0, 1, ty], [0, 0, 1]], dtype=np.float64)
@@ -66,8 +68,22 @@ def preprocess_matrix(w: int, h: int, mode: str, tw: int, th: int) -> tuple[np.n
     return np.eye(3), w, h
 
 
-def sample_geometric(cfg, w: int, h: int, rng: np.random.Generator) -> tuple[np.ndarray, int, int]:
-    """Randomly compose the enabled geometric augmentations. Returns (M, out_w, out_h)."""
+def _shift_range(limit: float, lo_edge: float, hi_edge: float, size: float) -> tuple[float, float]:
+    """Allowed shift in [-limit, limit] that keeps the span [lo_edge, hi_edge] inside [0, size].
+
+    0 is always allowed, so boxes already sticking out (e.g. after rotation) are never
+    pushed further out, and a span wider than the image simply isn't shifted.
+    """
+    return max(-limit, min(0.0, -lo_edge)), min(limit, max(0.0, size - hi_edge))
+
+
+def sample_geometric(cfg, w: int, h: int, rng: np.random.Generator,
+                     points: np.ndarray | None = None) -> tuple[np.ndarray, int, int]:
+    """Randomly compose the enabled geometric augmentations. Returns (M, out_w, out_h).
+
+    ``points`` (Nx2, box corners in input coords) is used by the translation step to keep
+    every box fully inside the image unless ``cfg.translate_allow_out`` is set.
+    """
     m = np.eye(3)
     cw, ch = float(w), float(h)
 
@@ -93,4 +109,14 @@ def sample_geometric(cfg, w: int, h: int, rng: np.random.Generator) -> tuple[np.
         kw, kh = cw * (1 - p), ch * (1 - p)
         x0, y0 = rng.uniform(0, cw - kw), rng.uniform(0, ch - kh)
         m = scale(cw / kw, ch / kh) @ translate(-x0, -y0) @ m
+    tx_max, ty_max = float(getattr(cfg, "translate_x", 0.0)), float(getattr(cfg, "translate_y", 0.0))
+    if tx_max > 0 or ty_max > 0:
+        x_lo, x_hi, y_lo, y_hi = -tx_max, tx_max, -ty_max, ty_max
+        if not getattr(cfg, "translate_allow_out", False) and points is not None and len(points):
+            bx0, by0, bx1, by1 = geometry.aabb(geometry.transform_points(points, m))
+            x_lo, x_hi = _shift_range(tx_max, bx0, bx1, cw)
+            y_lo, y_hi = _shift_range(ty_max, by0, by1, ch)
+        tx = rng.uniform(x_lo, x_hi) if x_hi > x_lo else 0.0
+        ty = rng.uniform(y_lo, y_hi) if y_hi > y_lo else 0.0
+        m = translate(tx, ty) @ m
     return m, int(round(cw)), int(round(ch))

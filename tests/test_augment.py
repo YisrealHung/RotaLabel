@@ -80,3 +80,44 @@ def test_preprocess_fit_letterbox():
     a = Annotation(0, 100, 50, 200, 100, 0, BBOX)  # whole image
     (t,) = transform_annotations([a], m, w, h, 0)
     assert (t.cx, t.cy, t.w, t.h) == pytest.approx((50, 50, 100, 50))
+
+
+def test_translate_keeps_boxes_inside_by_default():
+    rng = np.random.default_rng(1)
+    img = np.full((100, 200, 3), 128, np.uint8)
+    anns = [Annotation(0, 30, 50, 40, 20, 0, BBOX), Annotation(1, 160, 40, 30, 20, 30, OBB)]
+    cfg = AugConfig(translate_x=150, translate_y=80)
+    moved = set()
+    for _ in range(50):
+        out, boxes = augment(img, anns, cfg, rng, min_visibility=0.0)
+        assert out.shape == img.shape and len(boxes) == 2
+        for a, b in zip(anns, boxes):
+            # whole box still inside, size unchanged (pure shift)
+            assert b.w == pytest.approx(a.w, abs=1e-3) and b.h == pytest.approx(a.h, abs=1e-3)
+            x0, y0, x1, y1 = geometry.aabb(b.corners())
+            assert x0 >= -1e-6 and y0 >= -1e-6 and x1 <= 200 + 1e-6 and y1 <= 100 + 1e-6
+        moved.add(round(boxes[0].cx - 30, 3))
+    assert len(moved) > 10  # actually shifts
+    # leftmost box edge at x=10 -> may move left at most 10 px
+    assert min(moved) >= -10 - 1e-6
+
+
+def test_translate_allow_out_can_push_boxes_out():
+    rng = np.random.default_rng(2)
+    img = np.full((100, 100, 3), 128, np.uint8)
+    anns = [Annotation(0, 50, 50, 20, 20, 0, BBOX)]
+    cfg = AugConfig(translate_x=100, translate_allow_out=True)
+    counts = [len(augment(img, anns, cfg, rng, min_visibility=0.5)[1]) for _ in range(100)]
+    assert 0 in counts and 1 in counts
+
+
+def test_translate_shift_matches_pixels():
+    m, _, _ = G.sample_geometric(AugConfig(translate_x=30, translate_y=10), 100, 100,
+                                 np.random.default_rng(3))
+    assert np.allclose(m[:2, :2], np.eye(2))
+    assert abs(m[0, 2]) <= 30 and abs(m[1, 2]) <= 10
+
+
+def test_allow_out_alone_is_not_an_augmentation():
+    assert not AugConfig(translate_allow_out=True).any_enabled()
+    assert AugConfig(translate_y=5).any_enabled()

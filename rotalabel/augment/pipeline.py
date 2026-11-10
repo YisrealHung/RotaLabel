@@ -12,6 +12,9 @@ from .geometric import sample_geometric
 from .photometric import apply_photometric
 
 
+MODIFIERS = {"translate_allow_out"}
+
+
 @dataclass
 class AugConfig:
     # geometric
@@ -22,6 +25,9 @@ class AugConfig:
     shear: float = 0.0        # +/- degrees
     scale: float = 0.0        # +/- percent
     crop: float = 0.0         # max percent zoom-in crop
+    translate_x: float = 0.0  # +/- pixels (output image coords)
+    translate_y: float = 0.0  # +/- pixels
+    translate_allow_out: bool = False  # False: limit the shift so every box stays fully inside
     # photometric
     brightness: float = 0.0   # +/- percent
     exposure: float = 0.0     # +/- percent
@@ -41,7 +47,8 @@ class AugConfig:
         return cls(**{k: v for k, v in (d or {}).items() if k in names})
 
     def any_enabled(self) -> bool:
-        return any(bool(v) for v in asdict(self).values())
+        # options that only modify another augmentation don't enable anything by themselves
+        return any(bool(v) for k, v in asdict(self).items() if k not in MODIFIERS)
 
 
 def warp(img: np.ndarray, m: np.ndarray, out_w: int, out_h: int) -> np.ndarray:
@@ -104,7 +111,8 @@ def augment(img: np.ndarray, anns: list[Annotation], cfg: AugConfig, rng: np.ran
     if pre is None:
         pre = np.eye(3)
     pw, ph = size if size else (w, h)
-    g, ow, oh = sample_geometric(cfg, pw, ph, rng)
+    pts = geometry.transform_points(np.concatenate([a.corners() for a in anns]), pre) if anns else None
+    g, ow, oh = sample_geometric(cfg, pw, ph, rng, points=pts)
     m = g @ pre
     out = warp(img, m, ow, oh)
     out = apply_photometric(out, cfg, rng)
