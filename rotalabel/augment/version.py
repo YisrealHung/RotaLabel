@@ -28,7 +28,7 @@ class VersionConfig:
     resize_w: int = 640
     resize_h: int = 640
     grayscale: bool = False       # preprocessing (applies to every split)
-    multiplier: int = 3           # outputs per training image, including the original
+    multiplier: int = 3           # outputs per train/valid image, including the original (max 100)
     min_visibility: float = 30    # percent of a box that must remain after augmentation
     formats: list[str] = field(default_factory=lambda: ["yolo_obb"])
     aug: AugConfig = field(default_factory=AugConfig)
@@ -57,6 +57,28 @@ def split_items(names: list[str], cfg: VersionConfig) -> dict[str, list[str]]:
     n_valid = min(n_valid, n - n_train)
     return {"train": order[:n_train], "valid": order[n_train:n_train + n_valid],
             "test": order[n_train + n_valid:]}
+
+
+TEST_TARGET = 10   # the test split is always exported as exactly this many images (when possible)
+MAX_MULTIPLIER = 100
+
+
+def split_copies(splits: dict[str, list[str]], cfg: VersionConfig) -> dict[str, list[int]]:
+    """Number of output images (original included) for each source image of each split.
+
+    Train / Valid are multiplied by ``cfg.multiplier``. Test is topped up with augmented copies until it
+    holds TEST_TARGET images, or trimmed to TEST_TARGET originals when the split is larger than that.
+    Without any augmentation enabled every image is exported once (test is still capped)."""
+    aug_on = cfg.aug.any_enabled()
+    mult = max(1, min(MAX_MULTIPLIER, int(cfg.multiplier))) if aug_on else 1
+    out = {s: [mult] * len(splits[s]) for s in ("train", "valid")}
+    n = len(splits["test"])
+    if n == 0 or n >= TEST_TARGET or not aug_on:
+        out["test"] = [1] * min(n, TEST_TARGET)
+    else:
+        base, extra = divmod(TEST_TARGET, n)
+        out["test"] = [base + (i < extra) for i in range(n)]
+    return out
 
 
 def _prepare(img: np.ndarray, cfg: VersionConfig):
@@ -100,17 +122,19 @@ def generate_version(project, cfg: VersionConfig, out_dir: str | Path,
     names = [n for n in project.images
              if not cfg.skip_unannotated or project.box_count(n) > 0]
     splits = split_items(names, cfg)
+    copies_of = split_copies(splits, cfg)
+    splits["test"] = splits["test"][:len(copies_of["test"])]   # test capped at TEST_TARGET images
     class_names = project.class_names()
     writers = {fmt: FORMATS[fmt](out / fmt if len(cfg.formats) > 1 else out, class_names)
                for fmt in cfg.formats}
     rng = np.random.default_rng(cfg.seed + 1)
     stats = {"train": 0, "valid": 0, "test": 0, "boxes": 0, "source_images": len(names)}
-    total = len(names)
+    total = sum(len(v) for v in splits.values())
     done = 0
     used: set[str] = set()
 
     for split in ("train", "valid", "test"):
-        for name in splits[split]:
+        for name, copies in zip(splits[split], copies_of[split]):
             if cancelled and cancelled():
                 stats["cancelled"] = True
                 return stats
@@ -121,7 +145,6 @@ def generate_version(project, cfg: VersionConfig, out_dir: str | Path,
             if img is None:
                 continue
             anns = list(project.get(name).annotations)
-            copies = max(1, cfg.multiplier) if split == "train" and cfg.aug.any_enabled() else 1
             stem = _unique_stem(Path(name).stem, used, copies)
             for k, out_stem in enumerate(_output_stems(stem, copies)):
                 out_img, out_anns = make_sample(img, anns, cfg, rng, augmented=k > 0)

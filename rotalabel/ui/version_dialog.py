@@ -13,8 +13,9 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QF
 
 from .. import imageio
 from ..augment.pipeline import AugConfig
-from ..augment.version import (VersionConfig, draw_annotations, generate_version, make_sample,
-                               next_version_dir, split_items)
+from ..augment.version import (MAX_MULTIPLIER, TEST_TARGET, VersionConfig, draw_annotations,
+                               generate_version, make_sample, next_version_dir, split_copies,
+                               split_items)
 from ..exporters import FORMAT_LABELS
 from . import theme
 
@@ -184,7 +185,8 @@ class VersionDialog(QDialog):
         self.cb_skip = QCheckBox("略過沒有標註的圖片")
         self.cb_skip.setChecked(cfg.skip_unannotated)
         f.addRow(self.cb_skip)
-        f.addRow(_hint("擴增只會套用在 Train；Valid / Test 只做前處理。"))
+        f.addRow(_hint(f"有啟用擴增時：Train / Valid 依倍數擴增；Test 固定輸出 {TEST_TARGET} 張"
+                       f"（不足時以擴增補足，超過時只取前 {TEST_TARGET} 張）。"))
         return g
 
     def _pre_group(self, cfg):
@@ -255,8 +257,8 @@ class VersionDialog(QDialog):
     def _output_group(self, cfg):
         g = QGroupBox("5. 輸出")
         f = QFormLayout(g)
-        self.sp_mult = self._spin(1, 50, cfg.multiplier)
-        f.addRow("每張 Train 圖輸出數量（含原圖）", self.sp_mult)
+        self.sp_mult = self._spin(1, MAX_MULTIPLIER, min(cfg.multiplier, MAX_MULTIPLIER))
+        f.addRow("每張 Train / Valid 圖輸出數量（含原圖）", self.sp_mult)
         self.sp_vis = self._spin(0, 100, int(cfg.min_visibility))
         f.addRow("框保留門檻（擴增後至少保留 % 面積）", self.sp_vis)
         self.fmt_boxes = {}
@@ -312,10 +314,12 @@ class VersionDialog(QDialog):
         cfg = self.config()
         names = [n for n in self.project.images if not cfg.skip_unannotated or self.project.box_count(n)]
         sp = split_items(names, cfg)
+        cp = split_copies(sp, cfg)
         mult = cfg.multiplier if cfg.aug.any_enabled() else 1
         self.summary.setText(
-            f"來源 {len(names)} 張 → Train {len(sp['train'])}×{mult} = {len(sp['train']) * mult}，"
-            f"Valid {len(sp['valid'])}，Test {len(sp['test'])}")
+            f"來源 {len(names)} 張 → Train {len(sp['train'])}×{mult} = {sum(cp['train'])}，"
+            f"Valid {len(sp['valid'])}×{mult} = {sum(cp['valid'])}，"
+            f"Test {len(sp['test'])} → {sum(cp['test'])}")
 
     # ------------------------------------------------------------------ preview
     def next_preview_image(self):

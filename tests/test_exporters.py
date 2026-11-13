@@ -94,6 +94,20 @@ def test_legacy_project_folder_still_opens(tmp_path):
     assert not (p.root / "rotalabel_project").exists()
 
 
+def test_split_copies_test_target_and_cap():
+    from rotalabel.augment.version import split_copies
+    aug = AugConfig(flip_h=True)
+    sp = {"train": ["a", "b"], "valid": ["c"], "test": ["d", "e", "f"]}
+    cp = split_copies(sp, VersionConfig(multiplier=100, aug=aug))
+    assert cp["train"] == [100, 100] and cp["valid"] == [100] and cp["test"] == [4, 3, 3]
+    big = {"train": [], "valid": [], "test": [str(i) for i in range(15)]}
+    assert split_copies(big, VersionConfig(aug=aug))["test"] == [1] * 10
+    # without augmentation nothing is duplicated; test is still capped at 10
+    assert split_copies(sp, VersionConfig(multiplier=5))["test"] == [1, 1, 1]
+    assert split_copies(big, VersionConfig())["test"] == [1] * 10
+    assert split_copies({"train": [], "valid": [], "test": []}, VersionConfig(aug=aug))["test"] == []
+
+
 def test_generate_version_and_reimport(tmp_path):
     p = _make_project(tmp_path, 10)
     cfg = VersionConfig(multiplier=3, formats=["yolo", "yolo_obb", "dota", "coco"],
@@ -101,17 +115,19 @@ def test_generate_version_and_reimport(tmp_path):
                         aug=AugConfig(flip_h=True, rotate=15, brightness=10))
     out = tmp_path / "v1"
     stats = generate_version(p, cfg, out)
-    assert stats["train"] == 7 * 3 and stats["valid"] == 2 and stats["test"] == 1
+    # train/valid multiplied, the single test image topped up to 10
+    assert stats["train"] == 7 * 3 and stats["valid"] == 2 * 3 and stats["test"] == 10
+    assert len(list((out / "yolo_obb/test/images").iterdir())) == 10
     imgs = list((out / "yolo_obb/train/images").iterdir())
     assert len(imgs) == 21
     assert imageio.imread(imgs[0]).shape[:2] == (128, 128)
     assert (out / "version.json").exists()
-    # re-import the un-augmented valid labels into a fresh project: corners must match
+    # re-import the valid labels (originals + augmented copies) into a fresh project
     tmp2 = tmp_path / "re"
     tmp2.mkdir()
     for f in (out / "dota/valid/images").iterdir():
         (tmp2 / f.name).write_bytes(f.read_bytes())
     q = Project.open(tmp2)
     upd, n = importers.import_labels(q, out / "dota/valid/labelTxt")
-    assert upd == 2 and n >= 2
+    assert upd == 6 and n >= 2
     assert set(q.class_names()) >= {"object", "b"}
