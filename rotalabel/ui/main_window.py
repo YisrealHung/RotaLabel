@@ -8,18 +8,21 @@ from PySide6.QtCore import QSettings, QSize, Qt
 from PySide6.QtGui import QAction, QActionGroup, QColor, QKeySequence
 from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QDialogButtonBox, QDockWidget, QFileDialog,
                                QFormLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-                               QMainWindow, QMessageBox, QProgressBar, QPushButton, QSizePolicy, QToolBar,
-                               QVBoxLayout, QWidget)
+                               QMainWindow, QMenu, QMessageBox, QProgressBar, QPushButton, QSizePolicy, QToolBar,
+                               QToolButton, QVBoxLayout, QWidget)
 
 from .. import importers
 from ..model import BBOX, OBB
 from ..project_io import DEFAULT_LABEL_DIR, LABEL_FORMATS, Project
 from . import theme
-from .canvas import Canvas
+from .canvas import LABEL_MODES, LABELS_ALL, LABELS_NONE, LABELS_SELECTED, Canvas
 from .class_panel import ClassPanel
 from .delegates import DATA, AnnotationDelegate, ImageDelegate
 
 ICONS = {}  # action -> icon name, so icons can be redrawn when the theme changes
+
+LABEL_MODE_TEXT = {LABELS_ALL: "全部顯示", LABELS_SELECTED: "只顯示選取的框", LABELS_NONE: "全部隱藏"}
+LABEL_MODE_SHORT = {LABELS_ALL: "全部", LABELS_SELECTED: "選取", LABELS_NONE: "隱藏"}
 
 HELP = """
 <h3>標註</h3>
@@ -41,7 +44,7 @@ HELP = """
 <tr><td>滾輪 / Shift+滾輪</td><td>上下 / 左右捲動</td></tr>
 <tr><td>Ctrl+滾輪</td><td>縮放</td></tr>
 <tr><td>中鍵或空白鍵拖曳</td><td>平移</td></tr>
-<tr><td><b>L</b></td><td>顯示 / 隱藏標籤文字</td></tr>
+<tr><td><b>L</b></td><td>切換標籤顯示：全部 → 只顯示選取的框 → 全部隱藏</td></tr>
 <tr><td><b>Esc</b></td><td>取消選取</td></tr>
 </table>
 <p>標註會自動儲存到 <code>&lt;圖片資料夾&gt;/rotalabel_project/</code>。</p>
@@ -202,7 +205,20 @@ class MainWindow(QMainWindow):
         self._act("切換框類型", c.toggle_selected_kind, "T")
         self._act("複製", c.copy_selected, "Ctrl+C")
         self._act("貼上", c.paste, "Ctrl+V")
-        self._act("標籤文字", self.toggle_labels, "L")
+        # label display: L cycles, the View menu / toolbar dropdown pick a mode directly
+        self.a_labels = self._act("標籤", self.toggle_labels, "L",
+                                  tip="切換標籤顯示：全部 → 只顯示選取的框 → 全部隱藏", icon="tag")
+        self.label_mode_actions = {}
+        label_group = QActionGroup(self)
+        self.label_menu = QMenu("標籤顯示", self)
+        for mode in LABEL_MODES:
+            a = QAction(LABEL_MODE_TEXT[mode], self)
+            a.setCheckable(True)
+            a.triggered.connect(lambda _=False, m=mode: self.set_label_mode(m))
+            label_group.addAction(a)
+            self.label_menu.addAction(a)
+            self.label_mode_actions[mode] = a
+        self.a_labels.setMenu(self.label_menu)
         for i in range(9):
             self._act(f"類別 {i + 1}", lambda _=False, i=i: self.pick_class(i), str(i + 1))
 
@@ -221,6 +237,9 @@ class MainWindow(QMainWindow):
         for a in (self.a_undo, self.a_redo, self.a_fit):
             tb.addAction(a)
             tb.widgetForAction(a).setToolButtonStyle(Qt.ToolButtonIconOnly)
+        tb.addSeparator()
+        tb.addAction(self.a_labels)
+        tb.widgetForAction(self.a_labels).setPopupMode(QToolButton.MenuButtonPopup)
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         tb.addWidget(spacer)
@@ -246,6 +265,9 @@ class MainWindow(QMainWindow):
         m.addActions([self.a_select, self.a_bbox, self.a_obb])
         m = self.menuBar().addMenu("檢視")
         m.addActions([self.a_fit, self.a_theme])
+        m.addSeparator()
+        m.addMenu(self.label_menu)
+        self.set_label_mode(self.settings.value("label_mode", LABELS_ALL))
         m = self.menuBar().addMenu("說明")
         m.addAction(self.a_help)
 
@@ -500,8 +522,19 @@ class MainWindow(QMainWindow):
         self._update_info()
 
     def toggle_labels(self):
-        self.canvas.show_labels = not self.canvas.show_labels
-        self.canvas.refresh()
+        """L / toolbar button: all -> selected only -> none -> all."""
+        i = LABEL_MODES.index(self.canvas.label_mode)
+        self.set_label_mode(LABEL_MODES[(i + 1) % len(LABEL_MODES)])
+
+    def set_label_mode(self, mode: str):
+        if mode not in LABEL_MODES:
+            mode = LABELS_ALL
+        self.canvas.set_label_mode(mode)
+        self.label_mode_actions[mode].setChecked(True)
+        self.a_labels.setText(f"標籤：{LABEL_MODE_SHORT[mode]}")
+        self.settings.setValue("label_mode", mode)
+        if hasattr(self, "info_label"):
+            self.statusBar().showMessage(f"標籤顯示：{LABEL_MODE_TEXT[mode]}", 2000)
 
     # ------------------------------------------------------------------ dialogs
     def open_version_dialog(self):

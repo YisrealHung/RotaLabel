@@ -15,6 +15,10 @@ HANDLE_PX = 9          # handle size in screen pixels
 ROT_OFFSET_PX = 28     # distance of the rotation handle above the top edge
 MIN_BOX = 2.0
 
+# which boxes show their class / angle tag
+LABELS_ALL, LABELS_SELECTED, LABELS_NONE = "all", "selected", "none"
+LABEL_MODES = (LABELS_ALL, LABELS_SELECTED, LABELS_NONE)
+
 # handle id -> local sign (sx, sy)
 HANDLES = {
     "tl": (-1, -1), "t": (0, -1), "tr": (1, -1), "r": (1, 0),
@@ -81,7 +85,7 @@ class BoxItem(QGraphicsItem):
             p.drawLine(QPointF(0, r.top()), QPointF(0, r.top() + min(r.height() / 2, 10 * s)))
 
         # label (constant screen size)
-        if self.canvas.show_labels:
+        if self.canvas.label_visible(self):
             name = self.canvas.class_name(self.ann.cls)
             if self.ann.kind == OBB:
                 name += f"  {self.ann.angle:.1f}°"
@@ -162,7 +166,7 @@ class Canvas(QGraphicsView):
         self.classes = []                 # list[ClassDef] (shared with project)
         self.current_class = 0
         self.mode = BBOX                  # "select" | "bbox" | "obb"
-        self.show_labels = True
+        self.label_mode = LABELS_ALL      # which boxes draw their class / angle tag
         self.undo_stack = QUndoStack(self)
 
         self.pixmap_item: QGraphicsPixmapItem | None = None
@@ -286,6 +290,19 @@ class Canvas(QGraphicsView):
     def refresh(self):
         for it in self.items:
             it.update()
+
+    def label_visible(self, item: "BoxItem") -> bool:
+        if self.label_mode == LABELS_ALL:
+            return True
+        if self.label_mode == LABELS_SELECTED:
+            return item is self.selected_item or item is self.hover_item
+        return False
+
+    def set_label_mode(self, mode: str):
+        if mode not in LABEL_MODES:
+            mode = LABELS_ALL
+        self.label_mode = mode
+        self.refresh()
 
     # ---------------------------------------------------------------- edits
     def delete_selected(self):

@@ -176,6 +176,10 @@ def _path(name: str) -> tuple[QPainterPath, bool]:
     elif name == "theme":
         p.addEllipse(QRectF(4, 4, 16, 16))
         p.moveTo(12, 4); p.arcTo(QRectF(4, 4, 16, 16), 90, -180); p.closeSubpath()
+    elif name == "tag":
+        p.moveTo(3, 5); p.lineTo(3, 12); p.lineTo(12, 21); p.lineTo(21, 12); p.lineTo(12, 3); p.lineTo(5, 3)
+        p.quadTo(3, 3, 3, 5)
+        p.addEllipse(QRectF(6.5, 6.5, 3, 3))
     elif name == "check":
         p.moveTo(5, 12.5); p.lineTo(10, 17); p.lineTo(19, 7)
     elif name == "chev_up":

@@ -134,6 +134,33 @@ def test_label_output_dialog_switches_format(window, tmp_path, monkeypatch):
     assert (folder / "a.txt").read_text(encoding="utf-8") == "0 0.1 0.1 0.5 0.1 0.5 0.3 0.1 0.3\n"
 
 
+def test_label_display_modes(window, tmp_path):
+    from rotalabel.ui.canvas import LABELS_ALL, LABELS_NONE, LABELS_SELECTED
+    _make_images(tmp_path / "A", "img1.png")
+    window.open_project(str(tmp_path / "A"))
+    c = window.canvas
+    a = _add_box(window, select=False)
+    b = _add_box(window, select=False)
+    window.set_label_mode(LABELS_ALL)
+    assert c.label_visible(a) and c.label_visible(b)
+    window.toggle_labels()  # L: all -> selected only
+    assert c.label_mode == LABELS_SELECTED
+    assert not c.label_visible(a) and not c.label_visible(b)
+    c.select(b)
+    assert c.label_visible(b) and not c.label_visible(a)
+    window.toggle_labels()  # -> none, even for the selected box
+    assert c.label_mode == LABELS_NONE and not c.label_visible(b)
+    assert window.label_mode_actions[LABELS_NONE].isChecked()
+    window.toggle_labels()  # -> back to all
+    assert c.label_mode == LABELS_ALL
+    # the choice is remembered for the next window
+    window.set_label_mode(LABELS_SELECTED)
+    from rotalabel.ui.main_window import MainWindow
+    w2 = MainWindow()
+    assert w2.canvas.label_mode == LABELS_SELECTED
+    w2.close()
+
+
 def test_unreadable_image_keeps_annotations(window, tmp_path):
     folder = tmp_path / "A"
     _make_images(folder, "a.png", "b.png")
