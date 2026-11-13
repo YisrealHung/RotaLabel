@@ -8,7 +8,7 @@ import yaml
 from rotalabel import imageio, importers
 from rotalabel.augment.pipeline import AugConfig
 from rotalabel.augment.version import VersionConfig, generate_version
-from rotalabel.exporters import CocoWriter, DotaWriter, YoloObbWriter, YoloWriter
+from rotalabel.exporters import CocoObbWriter, CocoWriter, DotaWriter, YoloObbWriter, YoloWriter
 from rotalabel.model import BBOX, OBB, Annotation
 from rotalabel.project_io import Project
 
@@ -57,6 +57,27 @@ def test_coco(tmp_path):
     assert d["annotations"][0]["category_id"] == 1
     assert d["annotations"][1]["rbox"] == [120, 50, 40, 20, 90]
     assert len(d["annotations"][1]["segmentation"][0]) == 8
+
+
+def test_coco_obb(tmp_path):
+    c = CocoObbWriter(tmp_path, ["a", "b"])
+    c.add("train", "x.jpg", b"img", W, H, [BOX, ROT])
+    c.add("valid", "y.jpg", b"img", W, H, [ROT])
+    c.finish()
+    assert (tmp_path / "train/images/x.jpg").exists() and (tmp_path / "val/images/y.jpg").exists()
+    assert not (tmp_path / "valid").exists()
+    d = json.loads((tmp_path / "annotations/train.json").read_text())
+    assert json.loads((tmp_path / "annotations/val.json").read_text())["images"][0]["file_name"] == "y.jpg"
+    assert [c["id"] for c in d["categories"]] == [0, 1]
+    box, rot = d["annotations"]
+    assert box["category_id"] == 0 and rot["category_id"] == 1
+    assert box["bbox"] == [30, 40, 40, 20] and box["area"] == 800
+    assert rot["segmentation"] == [[130, 30, 130, 70, 110, 70, 110, 30]]
+    assert rot["bbox"] == [110, 30, 20, 40] and rot["area"] == 800
+    for a in (box, rot):  # clockwise on screen (y down) <=> positive signed shoelace area
+        p = np.array(a["segmentation"][0]).reshape(4, 2)
+        x, y = p[:, 0], p[:, 1]
+        assert np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)) > 0
 
 
 def _make_project(tmp_path, n=10):
@@ -110,7 +131,7 @@ def test_split_copies_test_target_and_cap():
 
 def test_generate_version_and_reimport(tmp_path):
     p = _make_project(tmp_path, 10)
-    cfg = VersionConfig(multiplier=3, formats=["yolo", "yolo_obb", "dota", "coco"],
+    cfg = VersionConfig(multiplier=3, formats=["yolo", "yolo_obb", "dota", "coco", "coco_obb"],
                         resize_mode="fit", resize_w=128, resize_h=128,
                         aug=AugConfig(flip_h=True, rotate=15, brightness=10))
     out = tmp_path / "v1"
@@ -122,6 +143,9 @@ def test_generate_version_and_reimport(tmp_path):
     assert len(imgs) == 21
     assert imageio.imread(imgs[0]).shape[:2] == (128, 128)
     assert (out / "version.json").exists()
+    for split, n in (("train", 21), ("val", 6), ("test", 10)):
+        js = json.loads((out / f"coco_obb/annotations/{split}.json").read_text(encoding="utf-8"))
+        assert len(js["images"]) == n == len(list((out / f"coco_obb/{split}/images").iterdir()))
     # re-import the valid labels (originals + augmented copies) into a fresh project
     tmp2 = tmp_path / "re"
     tmp2.mkdir()

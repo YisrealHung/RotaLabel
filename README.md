@@ -93,7 +93,7 @@ python main.py D:\data\images
    - **允許框超出邊界**：不勾選時會自動限制平移量，讓所有框完整留在圖內；勾選後可自由平移，超出的部分會被裁掉，並依「框保留門檻」決定是否保留。
 4. **色彩 / 像素擴增**（只套用到 Train）：亮度、曝光、對比、飽和度、色相、灰階、模糊、雜訊。
 5. **輸出**：
-   - 每張 Train 圖輸出數量（包含原圖）
+   - 每張 Train / Valid 圖輸出數量（包含原圖，最多 100）；Test 固定輸出 10 張
    - 框保留門檻：擴增後框留在圖內的面積低於此比例就捨棄
    - 匯出格式，可多選
 
@@ -107,6 +107,7 @@ python main.py D:\data\images
 | YOLO-OBB | `cls x1 y1 x2 y2 x3 y3 x4 y4`（正規化） | 可直接用於 ultralytics 旋轉框訓練；BBox 視為 0° 旋轉框 |
 | DOTA | `x1 y1 ... x4 y4 類別名稱 difficult`（像素） | BBox 視為 0° 旋轉框 |
 | COCO JSON | `bbox`、4 點 `segmentation` | 旋轉框另有 `rbox: [cx, cy, w, h, angle]` |
+| COCO-OBB | `segmentation`（4 個順時針頂點，像素）、外接 `bbox`、多邊形 `area`、`category_id` 從 0 開始 | 給 PaddleDetection PP-YOLOE-R 使用；BBox 視為 0° 旋轉框 |
 
 輸出資料夾結構（以 YOLO 為例）：
 
@@ -117,6 +118,19 @@ v1_20261105_103000/
 ├── train/images, train/labels
 ├── valid/images, valid/labels
 └── test/images,  test/labels
+```
+
+COCO-OBB 的結構不同，Valid 會輸出成 `val`：
+
+```
+coco_obb/
+├── train/images
+├── val/images
+├── test/images
+└── annotations/
+    ├── train.json
+    ├── val.json
+    └── test.json
 ```
 
 選擇多種格式時，每種格式各放在一個子資料夾。

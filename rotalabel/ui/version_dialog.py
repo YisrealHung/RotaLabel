@@ -269,7 +269,7 @@ class VersionDialog(QDialog):
             self.fmt_boxes[key] = cb
             row.addWidget(cb)
         f.addRow("匯出格式", row)
-        f.addRow(_hint("YOLO(bbox) 會把旋轉框轉成外接矩形；YOLO-OBB / DOTA 會把 bbox 視為 0° 旋轉框。"))
+        f.addRow(_hint("YOLO(bbox) 會把旋轉框轉成外接矩形；YOLO-OBB / DOTA / COCO-OBB 會把 bbox 視為 0° 旋轉框。"))
         return g
 
     @staticmethod
