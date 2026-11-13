@@ -3,6 +3,10 @@
     <folder>/rotalabel_project/project.json          classes + settings
     <folder>/rotalabel_project/annotations/<img>.json one file per image
     <folder>/rotalabel_project/versions/             generated dataset versions
+    <folder>/<img stem>.txt                           DOTA copy of the labels, next to each image
+
+The DOTA side files start with the DOTA header line ``imagesource:rotalabel``; a .txt that does not
+start with it was not written by us and is never overwritten.
 
 Folders labeled before the rename use <folder>/bboxer_project/; that folder keeps being
 used as-is (not moved), so existing annotations and exported data.yaml paths stay valid.
@@ -17,6 +21,8 @@ from .imageio import IMAGE_EXTS
 from .model import ClassDef, ImageAnnotations, default_color
 
 META_DIRNAME = "rotalabel_project"
+SIDECAR_HEADER = "imagesource:rotalabel"   # DOTA header line marking files we own
+
 LEGACY_META_DIRNAMES = ("bboxer_project",)  # project folder name before the rename
 
 
@@ -27,6 +33,11 @@ def meta_dir_for(root: Path) -> Path:
             if (root / name).is_dir():
                 return root / name
     return new
+
+
+def _fmt(v: float) -> str:
+    s = f"{v:.2f}".rstrip("0").rstrip(".")
+    return "0" if s in ("", "-0") else s
 
 
 def _natural_key(s: str):
@@ -67,6 +78,7 @@ class Project:
         if not p.classes:
             p.classes.append(ClassDef("object", default_color(0)))
             p.save_meta()
+        p.sync_label_files()  # backfill / refresh the DOTA side files
         return p
 
     def save_meta(self) -> None:
@@ -82,6 +94,46 @@ class Project:
             return
         self.ann_dir.mkdir(parents=True, exist_ok=True)
         f.write_text(json.dumps(ia.to_dict(), ensure_ascii=False, indent=1), encoding="utf-8")
+        self.write_label_file(name)
+
+    # ------------------------------------------------------------------ DOTA side files
+    def label_file(self, name: str) -> Path:
+        """<stem>.txt next to the image; <name>.txt if another image shares the stem (a.jpg / a.png)."""
+        stem = Path(name).stem
+        if sum(1 for n in self.images if Path(n).stem == stem) > 1:
+            return self.root / f"{name}.txt"
+        return self.root / f"{stem}.txt"
+
+    def write_label_file(self, name: str) -> bool:
+        """Write the image's boxes as DOTA (pixel corners, class name, difficult). Returns False when an
+        existing .txt that we did not write is in the way (it is left untouched)."""
+        ia = self.annotations.get(name)
+        if ia is None:
+            return False
+        f = self.label_file(name)
+        if f.exists():
+            try:
+                with f.open(encoding="utf-8", errors="ignore") as fh:
+                    if fh.readline().strip() != SIDECAR_HEADER:
+                        return False
+            except OSError:
+                return False
+        lines = [SIDECAR_HEADER, "gsd:null"]
+        for a in ia.annotations:
+            cname = self.classes[a.cls].name if 0 <= a.cls < len(self.classes) else f"class_{a.cls}"
+            coords = [_fmt(float(v)) for xy in a.corners() for v in xy]
+            lines.append(" ".join(coords + [cname.replace(" ", "_"), "0"]))
+        try:
+            f.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        except OSError:
+            return False
+        return True
+
+    def sync_label_files(self) -> None:
+        """Rewrite the side file of every image that has saved annotations (e.g. after a class rename)."""
+        for name in self.images:
+            if name in self.annotations and (self.ann_dir / f"{name}.json").exists():
+                self.write_label_file(name)
 
     # ------------------------------------------------------------------ queries
     def image_path(self, name: str) -> Path:

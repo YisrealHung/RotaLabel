@@ -154,6 +154,18 @@ coco_obb/
 └── versions/           # 產生的資料集
 ```
 
+每次存檔時，也會在圖片旁邊寫一份同檔名的 DOTA 標註檔（例如 `001.jpg` → `001.txt`）：
+
+```
+imagesource:rotalabel
+gsd:null
+x1 y1 x2 y2 x3 y3 x4 y4 類別名稱 0      # 像素座標，4 點順時針
+```
+
+- 第一行 `imagesource:rotalabel` 是 RotaLabel 的標記；資料夾裡原本就有、不是 RotaLabel 寫的 `.txt` 不會被覆蓋。
+- 兩張圖檔名相同、副檔名不同時（例如 `a.jpg`、`a.png`），會改用 `a.jpg.txt`、`a.png.txt`。
+- 開啟專案、類別改名時會自動更新；可以用「匯入標註」重新讀回。
+
 舊版（BBoxer）建立的 `bboxer_project/` 資料夾仍可直接開啟使用。
 
 ## 其他

@@ -104,6 +104,7 @@ class ClassPanel(QWidget):
                 return
             c.name = name
             self.project.save_meta()
+            self.project.sync_label_files()  # DOTA side files carry class names
             self.reload()
             self.classes_changed.emit()
 

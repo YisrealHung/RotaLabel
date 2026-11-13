@@ -106,6 +106,43 @@ def test_project_roundtrip(tmp_path):
     assert [a.cls for a in Project.open(p.root).get("img1.png").annotations] == [0]
 
 
+def test_dota_side_file_next_to_image(tmp_path):
+    p = _make_project(tmp_path, 2)
+    f = p.root / "img0.txt"
+    lines = f.read_text(encoding="utf-8").splitlines()
+    assert lines[:2] == ["imagesource:rotalabel", "gsd:null"]
+    assert lines[2] == "30 40 70 40 70 60 30 60 object 0"
+    assert lines[3].split()[8:] == ["b", "0"]
+    # re-importable with the existing importer
+    q = Project.open(p.root)
+    upd, n = importers.import_labels(q, p.root)
+    assert upd == 2 and n == 4
+    assert q.get("img0.png").annotations[0].corners() == pytest.approx(BOX.corners())
+    # deleting every box leaves just the header; renaming a class rewrites the files
+    ia = q.get("img1.png")
+    ia.annotations = []
+    q.save_annotations("img1.png")
+    assert (p.root / "img1.txt").read_text(encoding="utf-8").splitlines() == ["imagesource:rotalabel", "gsd:null"]
+    q.classes[0].name = "car"
+    q.sync_label_files()
+    assert (p.root / "img0.txt").read_text(encoding="utf-8").splitlines()[2].endswith("car 0")
+
+
+def test_side_file_never_overwrites_foreign_txt(tmp_path):
+    root = tmp_path / "imgs"
+    root.mkdir()
+    for n in ("a.png", "b.jpg", "b.png"):
+        imageio.imwrite(root / n, np.zeros((H, W, 3), np.uint8))
+    (root / "a.txt").write_text("0 0.5 0.5 0.1 0.1\n", encoding="utf-8")  # user's own YOLO label
+    p = Project.open(root)
+    for n in p.images:
+        p.get(n).annotations = [BOX]
+        p.save_annotations(n)
+    assert (root / "a.txt").read_text(encoding="utf-8") == "0 0.5 0.5 0.1 0.1\n"
+    # shared stem -> full file name, so b.jpg and b.png don't clobber each other
+    assert (root / "b.jpg.txt").exists() and (root / "b.png.txt").exists() and not (root / "b.txt").exists()
+
+
 def test_legacy_project_folder_still_opens(tmp_path):
     p = _make_project(tmp_path, 2)
     (p.root / "rotalabel_project").rename(p.root / "bboxer_project")  # folder labeled before the rename
