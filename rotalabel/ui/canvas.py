@@ -15,9 +15,12 @@ HANDLE_PX = 9          # handle size in screen pixels
 ROT_OFFSET_PX = 28     # distance of the rotation handle above the top edge
 MIN_BOX = 2.0
 
-# which boxes show their class / angle tag
-LABELS_ALL, LABELS_SELECTED, LABELS_NONE = "all", "selected", "none"
-LABEL_MODES = (LABELS_ALL, LABELS_SELECTED, LABELS_NONE)
+# display modes: what is drawn on top of the image
+LABELS_ALL = "all"            # boxes + class / angle tags
+LABELS_SELECTED = "selected"  # boxes; tag only on the selected / hovered box
+LABELS_NONE = "none"          # boxes only, no tags
+SHOW_NOTHING = "hidden"       # image only; just the box being edited stays visible
+LABEL_MODES = (LABELS_ALL, LABELS_SELECTED, LABELS_NONE, SHOW_NOTHING)
 
 # handle id -> local sign (sx, sy)
 HANDLES = {
@@ -61,6 +64,8 @@ class BoxItem(QGraphicsItem):
         return QPointF(0, -self.ann.h / 2 - ROT_OFFSET_PX * self.px())
 
     def paint(self, p: QPainter, option, widget=None):
+        if not self.canvas.box_visible(self):
+            return
         color = self.canvas.class_color(self.ann.cls)
         selected = self.canvas.selected_item is self
         hovered = self.canvas.hover_item is self
@@ -291,6 +296,10 @@ class Canvas(QGraphicsView):
         for it in self.items:
             it.update()
 
+    def box_visible(self, item: "BoxItem") -> bool:
+        """In SHOW_NOTHING mode only the selected box is drawn (so a box being drawn / edited stays visible)."""
+        return self.label_mode != SHOW_NOTHING or item is self.selected_item
+
     def label_visible(self, item: "BoxItem") -> bool:
         if self.label_mode == LABELS_ALL:
             return True
@@ -396,6 +405,8 @@ class Canvas(QGraphicsView):
         """Smallest box containing the point (makes nested boxes selectable)."""
         best, best_area = None, None
         for it in self.items:
+            if not self.box_visible(it):
+                continue  # hidden boxes can't be grabbed by accident
             lp = it.mapFromScene(sp)
             if abs(lp.x()) <= it.ann.w / 2 and abs(lp.y()) <= it.ann.h / 2:
                 area = it.ann.w * it.ann.h

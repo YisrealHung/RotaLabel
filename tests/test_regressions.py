@@ -135,7 +135,9 @@ def test_label_output_dialog_switches_format(window, tmp_path, monkeypatch):
 
 
 def test_label_display_modes(window, tmp_path):
-    from rotalabel.ui.canvas import LABELS_ALL, LABELS_NONE, LABELS_SELECTED
+    from PySide6.QtCore import QPointF
+
+    from rotalabel.ui.canvas import LABELS_ALL, LABELS_NONE, LABELS_SELECTED, SHOW_NOTHING
     _make_images(tmp_path / "A", "img1.png")
     window.open_project(str(tmp_path / "A"))
     c = window.canvas
@@ -143,16 +145,24 @@ def test_label_display_modes(window, tmp_path):
     b = _add_box(window, select=False)
     window.set_label_mode(LABELS_ALL)
     assert c.label_visible(a) and c.label_visible(b)
-    window.toggle_labels()  # L: all -> selected only
+    window.toggle_labels()  # L: all -> tag on selected only
     assert c.label_mode == LABELS_SELECTED
     assert not c.label_visible(a) and not c.label_visible(b)
     c.select(b)
     assert c.label_visible(b) and not c.label_visible(a)
-    window.toggle_labels()  # -> none, even for the selected box
+    window.toggle_labels()  # -> boxes only, no tags even for the selected box
     assert c.label_mode == LABELS_NONE and not c.label_visible(b)
-    assert window.label_mode_actions[LABELS_NONE].isChecked()
+    assert c.box_visible(a) and c.box_visible(b)
+    window.toggle_labels()  # -> nothing: boxes hidden too, except the one being edited
+    assert c.label_mode == SHOW_NOTHING
+    assert window.label_mode_actions[SHOW_NOTHING].isChecked()
+    assert c.box_visible(b) and not c.box_visible(a)
+    c.select(None)
+    assert not c.box_visible(a) and not c.box_visible(b)
+    assert c._item_at(QPointF(50, 50)) is None  # hidden boxes can't be grabbed
     window.toggle_labels()  # -> back to all
     assert c.label_mode == LABELS_ALL
+    assert c._item_at(QPointF(50, 50)) is not None
     # the choice is remembered for the next window
     window.set_label_mode(LABELS_SELECTED)
     from rotalabel.ui.main_window import MainWindow

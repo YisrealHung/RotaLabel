@@ -15,14 +15,19 @@ from .. import importers
 from ..model import BBOX, OBB
 from ..project_io import DEFAULT_LABEL_DIR, LABEL_FORMATS, Project
 from . import theme
-from .canvas import LABEL_MODES, LABELS_ALL, LABELS_NONE, LABELS_SELECTED, Canvas
+from .canvas import LABEL_MODES, LABELS_ALL, LABELS_NONE, LABELS_SELECTED, SHOW_NOTHING, Canvas
 from .class_panel import ClassPanel
 from .delegates import DATA, AnnotationDelegate, ImageDelegate
 
 ICONS = {}  # action -> icon name, so icons can be redrawn when the theme changes
 
-LABEL_MODE_TEXT = {LABELS_ALL: "全部顯示", LABELS_SELECTED: "只顯示選取的框", LABELS_NONE: "全部隱藏"}
-LABEL_MODE_SHORT = {LABELS_ALL: "全部", LABELS_SELECTED: "選取", LABELS_NONE: "隱藏"}
+LABEL_MODE_TEXT = {
+    LABELS_ALL: "全部顯示（框＋標籤）",
+    LABELS_SELECTED: "只顯示選取框的標籤",
+    LABELS_NONE: "只顯示框（隱藏標籤）",
+    SHOW_NOTHING: "全部隱藏（只看圖片）",
+}
+LABEL_MODE_SHORT = {LABELS_ALL: "全部", LABELS_SELECTED: "選取", LABELS_NONE: "只有框", SHOW_NOTHING: "隱藏"}
 
 HELP = """
 <h3>標註</h3>
@@ -44,7 +49,7 @@ HELP = """
 <tr><td>滾輪 / Shift+滾輪</td><td>上下 / 左右捲動</td></tr>
 <tr><td>Ctrl+滾輪</td><td>縮放</td></tr>
 <tr><td>中鍵或空白鍵拖曳</td><td>平移</td></tr>
-<tr><td><b>L</b></td><td>切換標籤顯示：全部 → 只顯示選取的框 → 全部隱藏</td></tr>
+<tr><td><b>L</b></td><td>切換顯示：全部 → 只顯示選取框的標籤 → 只顯示框 → 全部隱藏（只看圖片）</td></tr>
 <tr><td><b>Esc</b></td><td>取消選取</td></tr>
 </table>
 <p>標註會自動儲存到 <code>&lt;圖片資料夾&gt;/rotalabel_project/</code>。</p>
@@ -207,10 +212,10 @@ class MainWindow(QMainWindow):
         self._act("貼上", c.paste, "Ctrl+V")
         # label display: L cycles, the View menu / toolbar dropdown pick a mode directly
         self.a_labels = self._act("標籤", self.toggle_labels, "L",
-                                  tip="切換標籤顯示：全部 → 只顯示選取的框 → 全部隱藏", icon="tag")
+                                  tip="切換顯示：全部 → 只顯示選取框的標籤 → 只顯示框 → 全部隱藏", icon="tag")
         self.label_mode_actions = {}
         label_group = QActionGroup(self)
-        self.label_menu = QMenu("標籤顯示", self)
+        self.label_menu = QMenu("標註顯示", self)
         for mode in LABEL_MODES:
             a = QAction(LABEL_MODE_TEXT[mode], self)
             a.setCheckable(True)
@@ -522,7 +527,7 @@ class MainWindow(QMainWindow):
         self._update_info()
 
     def toggle_labels(self):
-        """L / toolbar button: all -> selected only -> none -> all."""
+        """L / toolbar button: all -> selected tag only -> boxes only -> nothing -> all."""
         i = LABEL_MODES.index(self.canvas.label_mode)
         self.set_label_mode(LABEL_MODES[(i + 1) % len(LABEL_MODES)])
 
@@ -531,10 +536,10 @@ class MainWindow(QMainWindow):
             mode = LABELS_ALL
         self.canvas.set_label_mode(mode)
         self.label_mode_actions[mode].setChecked(True)
-        self.a_labels.setText(f"標籤：{LABEL_MODE_SHORT[mode]}")
+        self.a_labels.setText(f"顯示：{LABEL_MODE_SHORT[mode]}")
         self.settings.setValue("label_mode", mode)
         if hasattr(self, "info_label"):
-            self.statusBar().showMessage(f"標籤顯示：{LABEL_MODE_TEXT[mode]}", 2000)
+            self.statusBar().showMessage(f"標註顯示：{LABEL_MODE_TEXT[mode]}", 2000)
 
     # ------------------------------------------------------------------ dialogs
     def open_version_dialog(self):
