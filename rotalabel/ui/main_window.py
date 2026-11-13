@@ -6,13 +6,14 @@ from pathlib import Path
 
 from PySide6.QtCore import QSettings, QSize, Qt
 from PySide6.QtGui import QAction, QActionGroup, QColor, QKeySequence
-from PySide6.QtWidgets import (QApplication, QDockWidget, QFileDialog, QHBoxLayout, QLabel, QLineEdit,
-                               QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QProgressBar,
-                               QSizePolicy, QToolBar, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QDialogButtonBox, QDockWidget, QFileDialog,
+                               QFormLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
+                               QMainWindow, QMessageBox, QProgressBar, QPushButton, QSizePolicy, QToolBar,
+                               QVBoxLayout, QWidget)
 
 from .. import importers
 from ..model import BBOX, OBB
-from ..project_io import Project
+from ..project_io import DEFAULT_LABEL_DIR, LABEL_FORMATS, Project
 from . import theme
 from .canvas import Canvas
 from .class_panel import ClassPanel
@@ -187,6 +188,8 @@ class MainWindow(QMainWindow):
         self.a_version = self._act("產生資料集", self.open_version_dialog, "Ctrl+E",
                                    tip="產生資料集版本：切分、擴增、匯出", icon="layers")
         self.a_import = self._act("匯入標註 (YOLO / YOLO-OBB / DOTA)…", self.import_labels, icon="import")
+        self.a_label_out = self._act("標註輸出設定…", self.edit_label_output,
+                                     tip="修改後的標註要寫到哪個資料夾、用什麼格式")
         self.a_theme = self._act("切換深色 / 淺色主題", self.toggle_theme, icon="theme")
         self.a_help = self._act("快捷鍵說明", self.show_help, "F1", icon="help")
 
@@ -231,7 +234,7 @@ class MainWindow(QMainWindow):
         self.toolbar = tb
 
         m = self.menuBar().addMenu("檔案")
-        m.addActions([self.a_open, self.a_save, self.a_import])
+        m.addActions([self.a_open, self.a_save, self.a_import, self.a_label_out])
         m.addSeparator()
         m.addAction(self.a_version)
         m.addAction(self._act("開啟版本資料夾", self.open_versions_folder))
@@ -302,7 +305,12 @@ class MainWindow(QMainWindow):
         self.index = -1
         self.project = project
         self.settings.setValue("last_project", folder)
-        self.setWindowTitle(f"RotaLabel — {folder}")
+        self._update_title()
+        n_img, n_box = self.project.auto_imported
+        if n_img:
+            self.statusBar().showMessage(
+                f"已載入資料夾內的 YOLO-OBB 標註：{n_img} 張圖片、{n_box} 個框（原檔不會被修改）；"
+                f"修改後的標註存到 {self._output_text()}", 15000)
         self.canvas.classes = self.project.classes
         self.class_panel.set_project(self.project)
         self.image_list.blockSignals(True)
@@ -528,6 +536,64 @@ class MainWindow(QMainWindow):
         self.class_panel.reload()
         self._reload_current()
         QMessageBox.information(self, "匯入標註", f"已匯入 {n_img} 張圖片、{n_box} 個框")
+
+    # ------------------------------------------------------------------ label output
+    def _output_text(self) -> str:
+        p = self.project
+        out = p.output_dir
+        where = "圖片旁" if out is None else (
+            f"{out.relative_to(p.root).as_posix()}/" if out.is_relative_to(p.root) else str(out))
+        return f"{LABEL_FORMATS[p.label_format]} → {where}"
+
+    def _update_title(self):
+        self.setWindowTitle(f"RotaLabel — {self.project.root}  [標註輸出：{self._output_text()}]")
+
+    def edit_label_output(self):
+        if not self.project:
+            return
+        p = self.project
+        dlg = QDialog(self)
+        dlg.setWindowTitle("標註輸出設定")
+        form = QFormLayout(dlg)
+        fmt = QComboBox()
+        for key, label in LABEL_FORMATS.items():
+            fmt.addItem(label, key)
+        fmt.setCurrentIndex(max(0, fmt.findData(p.label_format)))
+        path = QLineEdit(str(p.output_dir or p.root / DEFAULT_LABEL_DIR))
+        browse = QPushButton("瀏覽…")
+
+        def pick():
+            d = QFileDialog.getExistingDirectory(dlg, "選擇輸出資料夾", path.text() or str(p.root))
+            if d:
+                path.setText(d)
+        browse.clicked.connect(pick)
+        row = QHBoxLayout()
+        row.addWidget(path, 1)
+        row.addWidget(browse)
+        form.addRow("格式", fmt)
+        form.addRow("資料夾", row)
+        hint = QLabel("按確定後，所有已標註的圖片會以新設定重新寫出一次。\n"
+                      "圖片旁原本的標註檔不會被修改；舊輸出資料夾的檔案會保留。")
+        hint.setObjectName("muted")
+        form.addRow(hint)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        form.addRow(buttons)
+        dlg.resize(560, dlg.sizeHint().height())
+        if dlg.exec() != QDialog.Accepted:
+            return
+        target = Path(path.text().strip() or DEFAULT_LABEL_DIR)
+        if not target.is_absolute():
+            target = p.root / target
+        self.flush()
+        try:
+            n = p.set_label_output(fmt.currentData(), target)
+        except (ValueError, OSError) as e:
+            QMessageBox.warning(self, "標註輸出設定", f"無法套用：{e}")
+            return
+        self._update_title()
+        QMessageBox.information(self, "標註輸出設定", f"已將 {n} 張圖片的標註寫到 {self._output_text()}")
 
     def show_help(self):
         QMessageBox.information(self, "快捷鍵", HELP)

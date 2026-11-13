@@ -143,6 +143,82 @@ def test_side_file_never_overwrites_foreign_txt(tmp_path):
     assert (root / "b.jpg.txt").exists() and (root / "b.png.txt").exists() and not (root / "b.txt").exists()
 
 
+def _yolo_obb_folder(tmp_path):
+    root = tmp_path / "imgs"
+    root.mkdir()
+    for n in ("a.png", "b.png", "c.png"):
+        imageio.imwrite(root / n, np.zeros((H, W, 3), np.uint8))
+    (root / "classes.txt").write_text("nail\nscrew\n", encoding="utf-8")
+    # auto-labeler output: a has two boxes (class 1 first), b has none, c has no file
+    (root / "a.txt").write_text("1 0.1 0.2 0.3 0.2 0.3 0.4 0.1 0.4\n0 0.5 0.5 0.7 0.5 0.7 0.6 0.5 0.6\n",
+                                encoding="utf-8")
+    (root / "b.txt").write_text("", encoding="utf-8")
+    return root
+
+
+def test_yolo_obb_folder_is_loaded_and_edits_go_to_own_folder(tmp_path):
+    root = _yolo_obb_folder(tmp_path)
+    source = {f.name: f.read_bytes() for f in root.glob("*.txt")}
+    p = Project.open(root)
+    assert p.label_format == "yolo_obb"
+    assert p.output_dir == root / "rotalabel_labels"
+    assert p.class_names() == ["nail", "screw"]  # ids kept, no default "object" in front
+    assert p.auto_imported == (2, 2)
+    anns = p.get("a.png").annotations
+    assert [a.cls for a in anns] == [1, 0]
+    got = sorted(map(tuple, np.round(anns[0].corners() / [W, H], 6)))
+    assert np.array(got) == pytest.approx(np.array([[0.1, 0.2], [0.1, 0.4], [0.3, 0.2], [0.3, 0.4]]))
+    # delete one box, add one on c -> YOLO-OBB files in the output folder
+    p.get("a.png").annotations = anns[1:]
+    p.save_annotations("a.png")
+    ic = p.get("c.png")
+    ic.width, ic.height = W, H
+    ic.annotations = [BOX]
+    p.save_annotations("c.png")
+    out = root / "rotalabel_labels"
+    assert (out / "a.txt").read_text(encoding="utf-8").split() == \
+        ["0", "0.5", "0.5", "0.7", "0.5", "0.7", "0.6", "0.5", "0.6"]
+    c = (out / "c.txt").read_text(encoding="utf-8").split()
+    assert c[0] == "0" and len(c) == 9
+    assert (out / "b.txt").read_text(encoding="utf-8") == ""
+    assert (out / "classes.txt").read_text(encoding="utf-8").split() == ["nail", "screw"]
+    # the source labels are never touched
+    assert {f.name: f.read_bytes() for f in root.glob("*.txt")} == source
+    # reopening keeps the format and the edits, without re-importing
+    q = Project.open(root)
+    assert q.label_format == "yolo_obb" and q.auto_imported == (0, 0)
+    assert len(q.get("a.png").annotations) == 1
+    q.add_class("bolt")
+    assert (out / "classes.txt").read_text(encoding="utf-8").split() == ["nail", "screw", "bolt"]
+    assert (root / "classes.txt").read_text(encoding="utf-8").split() == ["nail", "screw"]
+
+
+def test_label_output_format_and_folder_can_change(tmp_path):
+    root = _yolo_obb_folder(tmp_path)
+    p = Project.open(root)
+    n = p.set_label_output("dota", tmp_path / "dota_labels")  # outside the image folder: kept absolute
+    assert n == 2
+    lines = (tmp_path / "dota_labels" / "a.txt").read_text(encoding="utf-8").splitlines()
+    assert lines[:2] == ["imagesource:rotalabel", "gsd:null"]
+    assert lines[2].split()[8:] == ["screw", "0"]
+    p.set_label_output("yolo_obb", root / "v2")  # inside: stored relative
+    assert p.settings["label_dir"] == "v2"
+    assert (root / "v2" / "a.txt").read_text(encoding="utf-8").split()[0] == "1"
+    assert Project.open(root).output_dir == root / "v2"
+    with pytest.raises(ValueError):
+        p.set_label_output("yolo_obb", root)  # would mix outputs with the source labels
+
+
+def test_yolo_obb_without_names_keeps_ids(tmp_path):
+    root = tmp_path / "imgs"
+    root.mkdir()
+    imageio.imwrite(root / "a.png", np.zeros((H, W, 3), np.uint8))
+    (root / "a.txt").write_text("2 0.1 0.2 0.3 0.2 0.3 0.4 0.1 0.4\n", encoding="utf-8")
+    p = Project.open(root)
+    assert p.class_names() == ["class_0", "class_1", "class_2"]
+    assert p.get("a.png").annotations[0].cls == 2
+
+
 def test_legacy_project_folder_still_opens(tmp_path):
     p = _make_project(tmp_path, 2)
     (p.root / "rotalabel_project").rename(p.root / "bboxer_project")  # folder labeled before the rename

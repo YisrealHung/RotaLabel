@@ -89,7 +89,7 @@ def import_labels(project, label_dir: str | Path, overwrite: bool = True) -> tup
             ia.height, ia.width = img.shape[:2]
         anns = parse_label_file(f, ia.width, ia.height, resolve_class)
         ia.annotations = anns if overwrite else ia.annotations + anns
-        project.save_annotations(name)
+        project.save_annotations(name, keep_empty=True)  # an empty label file is a checked negative
         updated += 1
         boxes += len(anns)
     project.save_meta()

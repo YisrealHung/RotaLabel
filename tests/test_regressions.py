@@ -114,6 +114,26 @@ def test_adding_class_keeps_selected_box_class(window, tmp_path, monkeypatch):
     assert window.canvas.current_class == 1  # new class becomes the drawing class
 
 
+def test_label_output_dialog_switches_format(window, tmp_path, monkeypatch):
+    folder = tmp_path / "A"
+    _make_images(folder, "a.png")
+    (folder / "a.txt").write_text("0 0.1 0.1 0.5 0.1 0.5 0.3 0.1 0.3\n", encoding="utf-8")
+    window.open_project(str(folder))
+    assert "YOLO-OBB → rotalabel_labels/" in window.windowTitle()
+    from PySide6.QtWidgets import QComboBox, QDialog, QLineEdit, QMessageBox
+
+    def fake_exec(dlg):
+        dlg.findChild(QComboBox).setCurrentIndex(dlg.findChild(QComboBox).findData("dota"))
+        dlg.findChild(QLineEdit).setText("out_dota")  # relative -> inside the image folder
+        return QDialog.Accepted
+    monkeypatch.setattr(QDialog, "exec", fake_exec)
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: None))
+    window.edit_label_output()
+    assert (folder / "out_dota" / "a.txt").read_text(encoding="utf-8").startswith("imagesource:rotalabel")
+    assert "DOTA → out_dota/" in window.windowTitle()
+    assert (folder / "a.txt").read_text(encoding="utf-8") == "0 0.1 0.1 0.5 0.1 0.5 0.3 0.1 0.3\n"
+
+
 def test_unreadable_image_keeps_annotations(window, tmp_path):
     folder = tmp_path / "A"
     _make_images(folder, "a.png", "b.png")
