@@ -157,7 +157,9 @@ class Canvas(QGraphicsView):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setScene(QGraphicsScene(self))
+        scene = QGraphicsScene(self)
+        scene.setItemIndexMethod(QGraphicsScene.NoIndex)
+        self.setScene(scene)
         self.setRenderHint(QPainter.Antialiasing)
         self.setRenderHint(QPainter.SmoothPixmapTransform)
         self.setViewportUpdateMode(QGraphicsView.FullViewportUpdate)
@@ -210,8 +212,17 @@ class Canvas(QGraphicsView):
         self.changed.emit()
 
     def _set_items(self, anns: list[Annotation]):
+        self._drag = None
+        sc = self.scene()
         for it in self.items:
-            self.scene().removeItem(it)
+            if sc:
+                if sc.mouseGrabberItem() is it:
+                    it.ungrabMouse()
+                if sc.focusItem() is it:
+                    it.clearFocus()
+            it.prepareGeometryChange()
+            if sc:
+                sc.removeItem(it)
         self.items = []
         self.selected_item = self.hover_item = None
         for a in anns:
@@ -240,17 +251,27 @@ class Canvas(QGraphicsView):
         self.select(self.items[idx] if 0 <= idx < len(self.items) else None)
 
     # ---------------------------------------------------------------- image
+    def clear(self):
+        """Reset the canvas and drop all scene items safely."""
+        self._drag = None
+        sc = self.scene()
+        if sc:
+            grabber = sc.mouseGrabberItem()
+            if grabber is not None:
+                grabber.ungrabMouse()
+            sc.clear()
+        self.items = []
+        self.pixmap_item = None
+        self.selected_item = self.hover_item = None
+        self.img_w = self.img_h = 0
+        self.undo_stack.clear()
+
     def load_image(self, path: str, anns: list[Annotation]) -> tuple[int, int]:
         reader = QImageReader(path)
         reader.setAutoTransform(True)
         img = reader.read()
-        self.scene().clear()
-        self.items = []
-        self.selected_item = self.hover_item = None
-        self.undo_stack.clear()
+        self.clear()
         if img.isNull():
-            self.pixmap_item = None
-            self.img_w = self.img_h = 0
             return 0, 0
         self.pixmap_item = self.scene().addPixmap(QPixmap.fromImage(img))
         self.pixmap_item.setZValue(0)
@@ -316,19 +337,31 @@ class Canvas(QGraphicsView):
     # ---------------------------------------------------------------- edits
     def delete_selected(self):
         it = self.selected_item
-        if not it:
+        if not it or it not in self.items:
+            self.selected_item = None
             return
+        if self._drag:
+            self._drag = None
+            self.viewport().update()
+        sc = self.scene()
+        if sc:
+            if sc.mouseGrabberItem() is it:
+                it.ungrabMouse()
+            if sc.focusItem() is it:
+                it.clearFocus()
+        it.prepareGeometryChange()
         before = self._snapshot()
         idx = self.items.index(it)
-        self.scene().removeItem(it)
+        if sc:
+            sc.removeItem(it)
         self.items.remove(it)
         self.selected_item = None
         self.hover_item = None
-        self._commit(before, "刪除")
         if self.items:
             self.select(self.items[min(idx, len(self.items) - 1)])
         else:
             self.selection_changed.emit(-1)
+        self._commit(before, "刪除")
 
     def rotate_selected(self, delta: float):
         it = self.selected_item
@@ -356,6 +389,7 @@ class Canvas(QGraphicsView):
             return
         before = self._snapshot()
         new = it.ann.to_bbox() if it.ann.kind == OBB else it.ann.to_obb()
+        it.prepareGeometryChange()
         it.ann.__dict__.update(new.__dict__)
         it.sync()
         self._commit(before, "切換框類型")
@@ -365,6 +399,7 @@ class Canvas(QGraphicsView):
         if not it:
             return
         before = self._snapshot()
+        it.prepareGeometryChange()
         it.ann.cx += dx
         it.ann.cy += dy
         it.sync()
@@ -500,24 +535,28 @@ class Canvas(QGraphicsView):
         elif t == "draw":
             d["end"] = self._clamp(sp)
             self.viewport().update()
-        elif t == "move":
-            o, a = d["orig"], d["item"].ann
-            dx, dy = sp.x() - d["start"].x(), sp.y() - d["start"].y()
-            a.cx, a.cy = o.cx + dx, o.cy + dy
-            if a.kind == BBOX:  # keep plain boxes inside the image
-                a.cx = min(max(a.cx, a.w / 2), self.img_w - a.w / 2) if a.w <= self.img_w else a.cx
-                a.cy = min(max(a.cy, a.h / 2), self.img_h - a.h / 2) if a.h <= self.img_h else a.cy
-            d["item"].sync()
-        elif t == "resize":
-            self._resize(d, sp, e.modifiers())
-        elif t == "rotate":
-            a = d["item"].ann
-            ang = math.degrees(math.atan2(sp.y() - a.cy, sp.x() - a.cx)) + 90
-            if e.modifiers() & Qt.ShiftModifier:
-                ang = round(ang / 15) * 15
-            a.angle = _norm180(ang)
-            d["item"].sync()
-        self.selection_changed.emit(self.selected_index()) if t in ("move", "resize", "rotate") else None
+        elif t in ("move", "resize", "rotate"):
+            if d["item"] not in self.items:
+                self._drag = None
+                return
+            if t == "move":
+                o, a = d["orig"], d["item"].ann
+                dx, dy = sp.x() - d["start"].x(), sp.y() - d["start"].y()
+                a.cx, a.cy = o.cx + dx, o.cy + dy
+                if a.kind == BBOX:  # keep plain boxes inside the image
+                    a.cx = min(max(a.cx, a.w / 2), self.img_w - a.w / 2) if a.w <= self.img_w else a.cx
+                    a.cy = min(max(a.cy, a.h / 2), self.img_h - a.h / 2) if a.h <= self.img_h else a.cy
+                d["item"].sync()
+            elif t == "resize":
+                self._resize(d, sp, e.modifiers())
+            elif t == "rotate":
+                a = d["item"].ann
+                ang = math.degrees(math.atan2(sp.y() - a.cy, sp.x() - a.cx)) + 90
+                if e.modifiers() & Qt.ShiftModifier:
+                    ang = round(ang / 15) * 15
+                a.angle = _norm180(ang)
+                d["item"].sync()
+            self.selection_changed.emit(self.selected_index())
 
     def _resize(self, d, sp: QPointF, mods):
         """Resize in the box's own (rotated) frame; the opposite handle stays fixed."""
@@ -540,6 +579,7 @@ class Canvas(QGraphicsView):
             h, lcy = max(abs(qy - ay), MIN_BOX), (qy + ay) / 2
         else:
             h, lcy = o.h, 0.0
+        d["item"].prepareGeometryChange()
         a.w, a.h = w, h
         a.cx = o.cx + lcx * c - lcy * s
         a.cy = o.cy + lcx * s + lcy * c
@@ -563,7 +603,7 @@ class Canvas(QGraphicsView):
                 self.select(it)
             self.viewport().update()
         elif t in ("move", "resize", "rotate"):
-            if d["item"].ann != d["orig"]:
+            if d["item"] in self.items and d["item"].ann != d["orig"]:
                 self._commit(d["before"], {"move": "移動", "resize": "縮放", "rotate": "旋轉"}[t])
         self._update_cursor(self.mapToScene(e.position().toPoint()))
 
@@ -623,6 +663,13 @@ class Canvas(QGraphicsView):
                 self.viewport().update()
             else:
                 self.select(None)
+            return
+        if e.key() in (Qt.Key_Delete, Qt.Key_Backspace):
+            if self._drag and self._drag.get("type") == "draw":
+                self._drag = None
+                self.viewport().update()
+                return
+            self.delete_selected()
             return
         super().keyPressEvent(e)
 

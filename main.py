@@ -7,7 +7,14 @@ from rotalabel.ui.main_window import MainWindow
 
 
 def main():
+    def _excepthook(exc_type, exc_value, exc_tb):
+        import traceback
+        if sys.stderr is not None:
+            traceback.print_exception(exc_type, exc_value, exc_tb)
+
+    sys.excepthook = _excepthook
     app = QApplication(sys.argv)
+    app.setOrganizationName("RotaLabel")
     app.setApplicationName("RotaLabel")
     app.setStyle("Fusion")
     win = MainWindow()

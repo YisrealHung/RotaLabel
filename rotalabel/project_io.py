@@ -189,8 +189,11 @@ class Project:
         f = self.ann_dir / f"{name}.json"
         if ia is None or (not ia.annotations and not f.exists() and not keep_empty):
             return
-        self.ann_dir.mkdir(parents=True, exist_ok=True)
-        f.write_text(json.dumps(ia.to_dict(), ensure_ascii=False, indent=1), encoding="utf-8")
+        try:
+            self.ann_dir.mkdir(parents=True, exist_ok=True)
+            f.write_text(json.dumps(ia.to_dict(), ensure_ascii=False, indent=1), encoding="utf-8")
+        except OSError:
+            return
         self.write_label_file(name)
 
     # ------------------------------------------------------------------ side files

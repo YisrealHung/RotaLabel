@@ -363,7 +363,7 @@ class VersionDialog(QDialog):
 
     def _fit_preview(self):
         pm = getattr(self, "_preview_pm", None)
-        if pm is not None:
+        if pm is not None and not pm.isNull() and self.preview.width() > 0 and self.preview.height() > 0:
             self.preview.setPixmap(pm.scaled(self.preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
 
     def resizeEvent(self, e):
@@ -416,17 +416,29 @@ class VersionDialog(QDialog):
             f"Train {stats['train']} 張、Valid {stats['valid']} 張、Test {stats['test']} 張，共 {stats['boxes']} 個框。\n\n"
             f"輸出位置：\n{out}\n\n要開啟資料夾嗎？")
         if r == QMessageBox.Yes:
-            os.startfile(out)
+            try:
+                os.startfile(out)
+            except OSError:
+                pass
 
     def _on_failed(self, msg):
         self._reset_buttons()
         self.bar.setVisible(False)
         QMessageBox.critical(self, "產生版本失敗", msg)
 
-    def closeEvent(self, e):
+    def _stop_worker(self):
         if self.worker and self.worker.isRunning():
             self.worker.cancel()
             self.worker.wait()
+
+    def reject(self):
+        if self.worker and self.worker.isRunning():
+            self.worker.cancel()
+            return
+        super().reject()
+
+    def closeEvent(self, e):
+        self._stop_worker()
         self.project.settings["version_config"] = self.config().to_dict()
         self.project.save_meta()
         super().closeEvent(e)

@@ -61,7 +61,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("RotaLabel 標註工具")
         self.resize(1440, 900)
-        self.settings = QSettings("rotalabel", "rotalabel")
+        self.settings = QSettings(QSettings.defaultFormat(), QSettings.UserScope, "rotalabel", "rotalabel")
         self._migrate_settings()
         self.project: Project | None = None
         self.index = -1
@@ -347,7 +347,8 @@ class MainWindow(QMainWindow):
         self.image_list.blockSignals(False)
         self._refresh_image_items()
         if not self.project.images:
-            self.canvas.scene().clear()
+            self.canvas.clear()
+            self._refresh_ann_list()
             self.info_label.setText("此資料夾沒有圖片")
             return
         last = self.project.settings.get("last_image")
@@ -478,7 +479,7 @@ class MainWindow(QMainWindow):
         self.ann_list.blockSignals(True)
         self.ann_list.setCurrentRow(idx)
         anns = self.canvas.annotations()
-        if 0 <= idx < self.ann_list.count():
+        if 0 <= idx < min(self.ann_list.count(), len(anns)):
             self.ann_list.item(idx).setData(DATA, self._ann_data(idx, anns[idx]))
         self.ann_list.blockSignals(False)
         if 0 <= idx < len(anns):
@@ -538,6 +539,7 @@ class MainWindow(QMainWindow):
         self.label_mode_actions[mode].setChecked(True)
         self.a_labels.setText(f"顯示：{LABEL_MODE_SHORT[mode]}")
         self.settings.setValue("label_mode", mode)
+        self.settings.sync()
         if hasattr(self, "info_label"):
             self.statusBar().showMessage(f"標註顯示：{LABEL_MODE_TEXT[mode]}", 2000)
 

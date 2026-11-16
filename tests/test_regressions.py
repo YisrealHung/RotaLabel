@@ -183,3 +183,111 @@ def test_unreadable_image_keeps_annotations(window, tmp_path):
     window.step(-1)
     assert len(_saved(folder, "b.png")) == 1
     assert window.project.get("b.png").width == 100
+
+
+def test_delete_selected_and_last_box(window, tmp_path):
+    folder = tmp_path / "A"
+    _make_images(folder, "a.png")
+    window.open_project(str(folder))
+    c = window.canvas
+    it1 = _add_box(window, cls=0)
+    it2 = _add_box(window, cls=0)
+    assert len(c.items) == 2
+    c.select(it1)
+    c.delete_selected()
+    assert len(c.items) == 1
+    assert c.selected_item is it2
+    # delete the last remaining box
+    c.delete_selected()
+    assert len(c.items) == 0
+    assert c.selected_item is None
+    # calling delete when empty is a safe no-op
+    c.delete_selected()
+    assert len(c.items) == 0
+
+
+def test_delete_while_drawing_cancels_drag(window, tmp_path):
+    from PySide6.QtCore import QPointF, Qt
+    from PySide6.QtGui import QKeyEvent
+    folder = tmp_path / "A"
+    _make_images(folder, "a.png")
+    window.open_project(str(folder))
+    c = window.canvas
+    # simulate active draw drag
+    c._drag = {"type": "draw", "start": QPointF(10, 10), "end": QPointF(40, 40)}
+    ev = QKeyEvent(QKeyEvent.KeyPress, Qt.Key_Delete, Qt.NoModifier)
+    c.keyPressEvent(ev)
+    assert c._drag is None
+    assert len(c.items) == 0
+
+
+def test_delete_while_resizing_clears_drag(window, tmp_path):
+    from PySide6.QtCore import QPoint, Qt
+    folder = tmp_path / "A"
+    _make_images(folder, "a.png")
+    window.open_project(str(folder))
+    c = window.canvas
+    it = _add_box(window, cls=0)
+    c._drag = {"type": "resize", "handle": "br", "item": it, "orig": it.ann, "before": c._snapshot()}
+    c.delete_selected()
+    assert c._drag is None
+    assert len(c.items) == 0
+
+    class DummyEvent:
+        def position(self):
+            class Pos:
+                def toPoint(self): return QPoint(60, 60)
+            return Pos()
+        def modifiers(self): return Qt.NoModifier
+
+    # subsequent mouse move / release should not crash or resurrect the box
+    c.mouseMoveEvent(DummyEvent())
+    c.mouseReleaseEvent(DummyEvent())
+    assert len(c.items) == 0
+
+
+def test_open_empty_folder_clears_canvas_state(window, tmp_path):
+    a, empty = tmp_path / "A", tmp_path / "empty"
+    _make_images(a, "img1.png")
+    empty.mkdir()
+    window.open_project(str(a))
+    _add_box(window, cls=0)
+    assert len(window.canvas.items) == 1
+    window.open_project(str(empty))
+    c = window.canvas
+    assert len(c.items) == 0
+    assert c.pixmap_item is None
+    assert c.selected_item is None
+    assert c.hover_item is None
+    assert c.undo_stack.count() == 0
+    # fit_view and undo on empty canvas should be safe no-ops
+    c.fit_view()
+    c.undo_stack.undo()
+
+
+def test_version_dialog_reject_while_worker_running(window, tmp_path):
+    _make_images(tmp_path / "A", "img1.png")
+    window.open_project(str(tmp_path / "A"))
+    from rotalabel.ui.version_dialog import VersionDialog
+
+    dlg = VersionDialog(window.project, window)
+
+    class FakeWorker:
+        def __init__(self):
+            self.cancelled = False
+            self.running = True
+
+        def isRunning(self):
+            return self.running
+
+        def cancel(self):
+            self.cancelled = True
+
+        def wait(self):
+            self.running = False
+
+    dlg.worker = FakeWorker()
+    dlg.reject()  # Esc while worker is running must cancel, not close/destroy thread
+    assert dlg.worker.cancelled is True
+    dlg.worker.running = False
+    dlg.close()
