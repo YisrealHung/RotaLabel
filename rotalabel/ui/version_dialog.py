@@ -9,9 +9,10 @@ from PySide6.QtCore import QThread, Qt, Signal
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFormLayout, QGridLayout,
                                QGroupBox, QHBoxLayout, QLabel, QMessageBox, QProgressBar, QPushButton,
-                               QScrollArea, QSizePolicy, QSpinBox, QVBoxLayout, QWidget)
+                               QScrollArea, QSizePolicy, QSpinBox, QTabWidget, QVBoxLayout, QWidget)
 
 from .. import imageio
+from ..augment.mosaic import MosaicConfig, build_pools, generate_mosaic, make_mosaic, mosaic_splits
 from ..augment.pipeline import AugConfig
 from ..augment.version import (MAX_MULTIPLIER, TEST_TARGET, VersionConfig, draw_annotations,
                                generate_version, make_sample, next_version_dir, split_copies,
@@ -56,13 +57,14 @@ def to_qpixmap(img: np.ndarray) -> QPixmap:
 
 
 class Worker(QThread):
+    """Runs ``job(progress=..., cancelled=...)`` (generate_version / generate_mosaic) off the UI thread."""
     progress = Signal(int, int, str)
     finished_ok = Signal(dict, str)
     failed = Signal(str)
 
-    def __init__(self, project, cfg, out_dir):
+    def __init__(self, job, out_dir):
         super().__init__()
-        self.project, self.cfg, self.out_dir = project, cfg, out_dir
+        self.job, self.out_dir = job, out_dir
         self._cancel = False
 
     def cancel(self):
@@ -70,9 +72,8 @@ class Worker(QThread):
 
     def run(self):
         try:
-            stats = generate_version(self.project, self.cfg, self.out_dir,
-                                     progress=lambda a, b, n: self.progress.emit(a, b, n),
-                                     cancelled=lambda: self._cancel)
+            stats = self.job(progress=lambda a, b, n: self.progress.emit(a, b, n),
+                             cancelled=lambda: self._cancel)
             self.finished_ok.emit(stats, str(self.out_dir))
         except Exception as e:  # noqa: BLE001 - surface any failure to the user
             self.failed.emit(f"{type(e).__name__}: {e}")
@@ -88,8 +89,11 @@ class VersionDialog(QDialog):
         self.preview_seed = 0
         self.preview_name: str | None = None
         self.aug_rows: dict[str, tuple[QCheckBox, QDoubleSpinBox | None]] = {}
+        self.mosaic_aug_rows: dict[str, tuple[QCheckBox, QDoubleSpinBox | None]] = {}
+        self._pool_cache: tuple[int, list] | None = None   # (padding, patches) for the mosaic preview
 
         cfg = VersionConfig.from_dict(project.settings.get("version_config", {}))
+        mcfg = MosaicConfig.from_dict(project.settings.get("mosaic_config", {}))
 
         form_widget = QWidget()
         form = QVBoxLayout(form_widget)
@@ -102,23 +106,38 @@ class VersionDialog(QDialog):
         form.addWidget(self._aug_group("4. 色彩 / 像素擴增", [], PHOTOMETRIC, cfg.aug))
         form.addWidget(self._output_group(cfg))
         form.addStretch(1)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(form_widget)
-        scroll.setMinimumWidth(560)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+        mosaic_widget = QWidget()
+        mform = QVBoxLayout(mosaic_widget)
+        mform.setContentsMargins(0, 0, 10, 0)
+        mform.setSpacing(4)
+        mform.addWidget(self._mosaic_layout_group(mcfg))
+        mform.addWidget(self._mosaic_geo_group(mcfg))
+        mform.addWidget(self._aug_group("3. 色彩 / 像素擴增", [], PHOTOMETRIC, mcfg.aug,
+                                        rows=self.mosaic_aug_rows, tail=self._mosaic_scope_option(mcfg)))
+        mform.addWidget(_hint("切分比例、亂數種子、灰階與匯出格式沿用「一般擴增」頁的設定；Resize 不套用，"
+                              "輸出大小就是背景範圍。"))
+        mform.addStretch(1)
+
+        self.tabs = QTabWidget()
+        self.tabs.addTab(self._scroll(form_widget), "一般擴增")
+        self.tabs.addTab(self._scroll(mosaic_widget), "拼接擴增")
+        self.tabs.setMinimumWidth(620)
+        self.tabs.setCurrentIndex(1 if project.settings.get("version_tab") == "mosaic" else 0)
 
         # preview
         title = QLabel("擴增預覽")
         title.setObjectName("summary")
-        hint = QLabel("左上為前處理後原圖，其餘為隨機擴增樣本")
+        hint = QLabel()
         hint.setObjectName("hint")
+        self.preview_hint = hint
         self.preview = QLabel("預覽")
         self.preview.setObjectName("preview")
         self.preview.setAlignment(Qt.AlignCenter)
         self.preview.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
         b_img = QPushButton("換一張圖片")
         b_img.clicked.connect(self.next_preview_image)
+        self.b_img = b_img
         b_rand = QPushButton("重新隨機")
         b_rand.clicked.connect(self.reroll)
         heads = QVBoxLayout()
@@ -137,7 +156,7 @@ class VersionDialog(QDialog):
 
         top = QHBoxLayout()
         top.setSpacing(16)
-        top.addWidget(scroll, 0)
+        top.addWidget(self.tabs, 0)
         top.addLayout(right, 1)
 
         self.summary = QLabel()
@@ -164,9 +183,12 @@ class VersionDialog(QDialog):
         lay.addLayout(bottom)
 
         self._connect_all(form_widget)
+        self._connect_all(mosaic_widget)
+        self.tabs.currentChanged.connect(self._changed)
         resize_on = self.cmb_resize.currentData() != "none"
         self.sp_rw.setEnabled(resize_on)
         self.sp_rh.setEnabled(resize_on)
+        self._sync_mode()
         self.next_preview_image()
         self._update_summary()
 
@@ -209,7 +231,8 @@ class VersionDialog(QDialog):
         f.addRow(_hint("EXIF 方向一律自動校正 (auto-orient)。"))
         return g
 
-    def _aug_group(self, title, flags, params, aug: AugConfig, tail=None):
+    def _aug_group(self, title, flags, params, aug, tail=None, rows=None):
+        rows = self.aug_rows if rows is None else rows
         g = QGroupBox(title)
         grid = QGridLayout(g)
         r = 0
@@ -217,7 +240,7 @@ class VersionDialog(QDialog):
             cb = QCheckBox(text)
             cb.setChecked(bool(getattr(aug, key)))
             grid.addWidget(cb, r, 0, 1, 3)
-            self.aug_rows[key] = (cb, None)
+            rows[key] = (cb, None)
             r += 1
         for key, text, unit, mx, default, dec in params:
             cur = float(getattr(aug, key))
@@ -233,11 +256,142 @@ class VersionDialog(QDialog):
             grid.addWidget(cb, r, 0)
             grid.addWidget(sp, r, 1)
             grid.addWidget(QLabel(unit), r, 2)
-            self.aug_rows[key] = (cb, sp)
+            rows[key] = (cb, sp)
             r += 1
         if tail:
             tail(grid, r, aug)
         return g
+
+    # ------------------------------------------------------------------ mosaic page
+    def _mosaic_layout_group(self, m: MosaicConfig):
+        g = QGroupBox("1. 背景範圍與張數")
+        f = QFormLayout(g)
+        self.sp_cw, self.sp_ch = self._spin(64, 8192, m.canvas_w), self._spin(64, 8192, m.canvas_h)
+        row = QHBoxLayout()
+        row.addWidget(self.sp_cw)
+        row.addWidget(QLabel("×"))
+        row.addWidget(self.sp_ch)
+        row.addWidget(QLabel("px"))
+        row.addStretch(1)
+        f.addRow("背景範圍 寬 × 高", row)
+        self.sp_cnt = {s: self._spin(0, 100000, v) for s, v in m.counts().items()}
+        row = QHBoxLayout()
+        for lab, s in (("Train", "train"), ("Valid", "valid"), ("Test", "test")):
+            self.sp_cnt[s].setMaximumWidth(90)
+            row.addWidget(QLabel(lab))
+            row.addWidget(self.sp_cnt[s])
+        row.addStretch(1)
+        f.addRow("產生張數", row)
+        self.sp_np, self.sp_nj = self._spin(1, 500, m.patches), self._spin(0, 500, m.patches_jitter)
+        row = QHBoxLayout()
+        row.addWidget(self.sp_np)
+        row.addWidget(QLabel("±"))
+        row.addWidget(self.sp_nj)
+        self.lbl_range = QLabel()
+        row.addWidget(self.lbl_range)
+        row.addStretch(1)
+        f.addRow("每張拼接張數", row)
+        f.addRow(_hint("原圖不夠時會重複使用同一張，但每份複本的角度都不同（至少差 30°）。"))
+        self.cb_overlap = QCheckBox("允許圖塊背景互相重疊（標註框不會被蓋住）")
+        self.cb_overlap.setChecked(bool(m.allow_overlap))
+        f.addRow(self.cb_overlap)
+        self.sp_minfit = self._spin(1, 100, int(m.min_fit_scale))
+        row = QHBoxLayout()
+        row.addWidget(self.sp_minfit)
+        row.addWidget(QLabel("%（放不下時最多縮到這麼小；100 = 不縮小）"))
+        row.addStretch(1)
+        f.addRow("最小縮放", row)
+        self.sp_pad = self._spin(0, 1000, m.padding)
+        f.addRow("裁切外擴 px", self.sp_pad)
+        self.sp_gap = self._spin(0, 1000, m.gap)
+        f.addRow("間距 px", self.sp_gap)
+        f.addRow(_hint("間距：允許重疊時是標註框周圍保留的距離，不重疊時是圖塊之間的距離。"))
+        f.addRow(_hint("每張原圖裁出「容納所有標註框的方框」當圖塊，隨機貼到背景上。找不到空位時先逐步縮小再試，"
+                       "縮到最小仍放不下才少放。比背景大的圖塊會自動縮小。空白處填入所用圖塊邊緣的平均色。"))
+        return g
+
+    def _mosaic_geo_group(self, m: MosaicConfig):
+        g = QGroupBox("2. 圖塊幾何變化 · 框會跟著轉換")
+        grid = QGridLayout(g)
+        self.cb_mflip_h, self.cb_mflip_v, self.cb_mrot90 = (QCheckBox(t) for t in
+                                                            ("水平翻轉", "垂直翻轉", "90° 旋轉（隨機 0/90/180/270）"))
+        for r, (cb, val) in enumerate(((self.cb_mflip_h, m.flip_h), (self.cb_mflip_v, m.flip_v),
+                                       (self.cb_mrot90, m.rot90))):
+            cb.setChecked(bool(val))
+            grid.addWidget(cb, r, 0, 1, 3)
+        self.m_geo = {}
+        for r, (key, text, unit, mx, default) in enumerate((("rotate", "任意角度旋轉", "± 度", 180, 15),
+                                                            ("scale", "縮放", "± %", 90, 20)), start=3):
+            cur = float(getattr(m, key))
+            cb = QCheckBox(text)
+            cb.setChecked(cur > 0)
+            sp = QDoubleSpinBox()
+            sp.setDecimals(0)
+            sp.setRange(1, mx)
+            sp.setValue(cur if cur > 0 else default)
+            sp.setEnabled(cur > 0)
+            cb.toggled.connect(sp.setEnabled)
+            grid.addWidget(cb, r, 0)
+            grid.addWidget(sp, r, 1)
+            grid.addWidget(QLabel(unit), r, 2)
+            self.m_geo[key] = (cb, sp)
+        grid.addWidget(_hint("任意角度旋轉後，圖塊四角露出的部分會用背景色。"), 5, 0, 1, 3)
+        return g
+
+    def _mosaic_scope_option(self, m: MosaicConfig):
+        def tail(grid: QGridLayout, r: int, _aug):
+            self.cmb_mscope = QComboBox()
+            self.cmb_mscope.addItem("每個圖塊各自隨機", "patch")
+            self.cmb_mscope.addItem("整張拼接圖一起", "canvas")
+            self.cmb_mscope.setCurrentIndex(max(0, self.cmb_mscope.findData(m.photometric_scope)))
+            grid.addWidget(QLabel("套用方式"), r, 0)
+            grid.addWidget(self.cmb_mscope, r, 1, 1, 2)
+        return tail
+
+    @staticmethod
+    def _scroll(w: QWidget) -> QScrollArea:
+        s = QScrollArea()
+        s.setWidgetResizable(True)
+        s.setWidget(w)
+        s.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        return s
+
+    def is_mosaic(self) -> bool:
+        return self.tabs.currentIndex() == 1
+
+    def mosaic_config(self) -> MosaicConfig:
+        aug = AugConfig()
+        for key, (cb, sp) in self.mosaic_aug_rows.items():
+            setattr(aug, key, float(sp.value()) if cb.isChecked() else 0.0)
+        geo = {k: (float(sp.value()) if cb.isChecked() else 0.0) for k, (cb, sp) in self.m_geo.items()}
+        return MosaicConfig(
+            canvas_w=self.sp_cw.value(), canvas_h=self.sp_ch.value(),
+            count_train=self.sp_cnt["train"].value(), count_valid=self.sp_cnt["valid"].value(),
+            count_test=self.sp_cnt["test"].value(),
+            patches=self.sp_np.value(), patches_jitter=self.sp_nj.value(),
+            allow_overlap=self.cb_overlap.isChecked(), min_fit_scale=self.sp_minfit.value(),
+            padding=self.sp_pad.value(), gap=self.sp_gap.value(),
+            flip_h=self.cb_mflip_h.isChecked(), flip_v=self.cb_mflip_v.isChecked(), rot90=self.cb_mrot90.isChecked(),
+            rotate=geo["rotate"], scale=geo["scale"],
+            photometric_scope=self.cmb_mscope.currentData(), aug=aug)
+
+    def _sync_mode(self):
+        mosaic = self.is_mosaic()
+        self.b_img.setVisible(not mosaic)
+        self.preview_hint.setText("隨機拼接樣本（使用所有已標註圖片的圖塊）" if mosaic
+                                  else "左上為前處理後原圖，其餘為隨機擴增樣本")
+
+    def _preview_pool(self, padding: int) -> list:
+        """Patches of (up to 60) annotated images, cached per padding."""
+        if self._pool_cache and self._pool_cache[0] == padding:
+            return self._pool_cache[1]
+        names = [n for n in self.project.images if self.project.box_count(n)]
+        if len(names) > 60:
+            idx = np.random.default_rng(0).choice(len(names), 60, replace=False)
+            names = [names[i] for i in sorted(idx)]
+        pool = build_pools(self.project, {"train": names}, padding)["train"]
+        self._pool_cache = (padding, pool)
+        return pool
 
     def _translate_options(self, grid: QGridLayout, r: int, aug: AugConfig):
         cb = QCheckBox("允許框超出邊界（超出部分裁掉，依「框保留門檻」決定是否保留）")
@@ -307,11 +461,22 @@ class VersionDialog(QDialog):
         resize_on = self.cmb_resize.currentData() != "none"
         self.sp_rw.setEnabled(resize_on)
         self.sp_rh.setEnabled(resize_on)
+        self._sync_mode()
         self._update_summary()
         self.render_preview()
 
     def _update_summary(self):
         cfg = self.config()
+        m = self.mosaic_config()
+        lo, hi = m.patch_range()
+        self.lbl_range.setText(f"→ 每張 {lo} 張" if lo == hi else f"→ 每張 {lo} ~ {hi} 張隨機")
+        if self.is_mosaic():
+            sp = mosaic_splits(self.project, cfg)
+            n ={s: (m.counts()[s] if sp[s] else 0) for s in ("train", "valid", "test")}
+            self.summary.setText(
+                f"拼接 {m.canvas_w}×{m.canvas_h} → Train {n['train']}、Valid {n['valid']}、Test {n['test']} 張"
+                f"（圖塊來源：Train {len(sp['train'])}、Valid {len(sp['valid'])}、Test {len(sp['test'])} 張原圖）")
+            return
         names = [n for n in self.project.images if not cfg.skip_unannotated or self.project.box_count(n)]
         sp = split_items(names, cfg)
         cp = split_copies(sp, cfg)
@@ -336,6 +501,9 @@ class VersionDialog(QDialog):
         self.render_preview()
 
     def render_preview(self):
+        if self.is_mosaic():
+            self._render_mosaic_preview()
+            return
         if self.preview_name is None or getattr(self, "_preview_img", None) is None:
             return
         cfg = self.config()
@@ -361,6 +529,19 @@ class VersionDialog(QDialog):
         self._preview_pm = pm
         self._fit_preview()
 
+    def _render_mosaic_preview(self):
+        m = self.mosaic_config()
+        pool = self._preview_pool(m.padding)
+        if not pool:
+            self._preview_pm = None
+            self.preview.setPixmap(QPixmap())
+            self.preview.setText("沒有已標註的圖片可以拼接")
+            return
+        img, boxes = make_mosaic(pool, m, np.random.default_rng(self.preview_seed), grayscale=self.cb_gray.isChecked())
+        img = draw_annotations(img, boxes, [c.color for c in self.project.classes], self.project.class_names())
+        self._preview_pm = to_qpixmap(img)
+        self._fit_preview()
+
     def _fit_preview(self):
         pm = getattr(self, "_preview_pm", None)
         if pm is not None and not pm.isNull() and self.preview.width() > 0 and self.preview.height() > 0:
@@ -379,10 +560,21 @@ class VersionDialog(QDialog):
         if cfg.train + cfg.valid + cfg.test <= 0:
             QMessageBox.warning(self, "產生版本", "切分比例總和不可為 0")
             return
-        self.project.settings["version_config"] = cfg.to_dict()
-        self.project.save_meta()
+        self._save_settings()
         out = next_version_dir(self.project)
-        self.worker = Worker(self.project, cfg, out)
+        if self.is_mosaic():
+            m = self.mosaic_config()
+            sp = mosaic_splits(self.project, cfg)
+            if not any(sp[s] and m.counts()[s] for s in ("train", "valid", "test")):
+                QMessageBox.warning(self, "產生版本", "沒有可拼接的切分：請確認有已標註的圖片，且張數不全為 0")
+                return
+
+            def job(**kw):
+                return generate_mosaic(self.project, cfg, m, out, **kw)
+        else:
+            def job(**kw):
+                return generate_version(self.project, cfg, out, **kw)
+        self.worker = Worker(job, out)
         self.worker.progress.connect(self._on_progress)
         self.worker.finished_ok.connect(self._on_done)
         self.worker.failed.connect(self._on_failed)
@@ -439,6 +631,11 @@ class VersionDialog(QDialog):
 
     def closeEvent(self, e):
         self._stop_worker()
-        self.project.settings["version_config"] = self.config().to_dict()
-        self.project.save_meta()
+        self._save_settings()
         super().closeEvent(e)
+
+    def _save_settings(self):
+        self.project.settings["version_config"] = self.config().to_dict()
+        self.project.settings["mosaic_config"] = self.mosaic_config().to_dict()
+        self.project.settings["version_tab"] = "mosaic" if self.is_mosaic() else "normal"
+        self.project.save_meta()

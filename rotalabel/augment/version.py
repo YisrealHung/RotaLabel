@@ -114,19 +114,31 @@ def _unique_stem(stem: str, used: set[str], copies: int = 1) -> str:
     return s
 
 
+def source_names(project, cfg: VersionConfig) -> list[str]:
+    return [n for n in project.images if not cfg.skip_unannotated or project.box_count(n) > 0]
+
+
+def make_writers(out: Path, formats: list[str], class_names: list[str]) -> dict:
+    """One writer per format; several formats each get their own sub folder."""
+    return {fmt: FORMATS[fmt](out / fmt if len(formats) > 1 else out, class_names) for fmt in formats}
+
+
+def write_meta(out: Path, meta: dict) -> None:
+    meta = {"created": time.strftime("%Y-%m-%d %H:%M:%S"), **meta}
+    (out / "version.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def generate_version(project, cfg: VersionConfig, out_dir: str | Path,
                      progress: Callable[[int, int, str], None] | None = None,
                      cancelled: Callable[[], bool] | None = None) -> dict:
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    names = [n for n in project.images
-             if not cfg.skip_unannotated or project.box_count(n) > 0]
+    names = source_names(project, cfg)
     splits = split_items(names, cfg)
     copies_of = split_copies(splits, cfg)
     splits["test"] = splits["test"][:len(copies_of["test"])]   # test capped at TEST_TARGET images
     class_names = project.class_names()
-    writers = {fmt: FORMATS[fmt](out / fmt if len(cfg.formats) > 1 else out, class_names)
-               for fmt in cfg.formats}
+    writers = make_writers(out, cfg.formats, class_names)
     rng = np.random.default_rng(cfg.seed + 1)
     stats = {"train": 0, "valid": 0, "test": 0, "boxes": 0, "source_images": len(names)}
     total = sum(len(v) for v in splits.values())
@@ -160,9 +172,7 @@ def generate_version(project, cfg: VersionConfig, out_dir: str | Path,
         wr.finish()
     if progress:
         progress(total, total, "")
-    meta = {"created": time.strftime("%Y-%m-%d %H:%M:%S"), "config": cfg.to_dict(), "stats": stats,
-            "classes": class_names, "splits": splits}
-    (out / "version.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_meta(out, {"config": cfg.to_dict(), "stats": stats, "classes": class_names, "splits": splits})
     return stats
 
 
