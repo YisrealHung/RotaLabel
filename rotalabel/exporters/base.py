@@ -12,6 +12,10 @@ SPLITS = ("train", "valid", "test")
 class BaseWriter:
     """Writes <out>/<split>/images/<file> and format specific labels."""
 
+    # True: write_labels only writes that image's own label file (no shared state), so worker processes
+    # may call it in parallel. False (COCO): labels accumulate in one file, written by the main process.
+    per_image_labels = True
+
     def __init__(self, out_dir: str | Path, class_names: list[str]):
         self.out = Path(out_dir)
         self.class_names = list(class_names)
@@ -22,10 +26,13 @@ class BaseWriter:
         d.mkdir(parents=True, exist_ok=True)
         return d
 
-    def add(self, split: str, filename: str, image_bytes: bytes, width: int, height: int,
+    def add(self, split: str, filename: str, image_bytes: bytes | None, width: int, height: int,
             anns: list[Annotation]) -> None:
+        """``image_bytes=None``: the image file was already written to ``image_dir(split)`` (e.g. by a
+        worker process); only the labels are written here."""
         self.used_splits.add(split)
-        (self.image_dir(split) / filename).write_bytes(image_bytes)
+        if image_bytes is not None:
+            (self.image_dir(split) / filename).write_bytes(image_bytes)
         self.write_labels(split, filename, width, height, anns)
 
     def write_labels(self, split, filename, width, height, anns) -> None:  # pragma: no cover

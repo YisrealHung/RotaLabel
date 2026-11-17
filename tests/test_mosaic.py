@@ -49,6 +49,26 @@ def test_transform_patch_keeps_boxes_on_the_content():
             assert b.cy == pytest.approx(ys.mean() + 0.5, abs=1.5)
 
 
+def test_similar_anns_matches_generic_transform():
+    from rotalabel.augment import geometric as G
+    from rotalabel.augment.mosaic import similar_anns
+    from rotalabel.augment.pipeline import transform_annotations
+    rng = np.random.default_rng(5)
+    anns = [Annotation(0, 400, 300, 80, 30, 25, OBB), Annotation(1, 350, 330, 40, 20, 0, BBOX),
+            Annotation(0, 420, 280, 60, 10, -70, OBB)]
+    for _ in range(50):
+        m = G.translate(*rng.uniform(-50, 50, 2)) @ G.scale(rng.uniform(0.5, 1.5)) @ \
+            G.about(G.rotation(rng.uniform(-180, 180)), 400, 300)
+        if rng.random() < 0.5:
+            m = m @ G.flip_h(800)
+        fast, ref = similar_anns(anns, m), transform_annotations(anns, m, 5000, 5000, 0.0)
+        for a, b in zip(fast, ref):
+            assert a.kind == b.kind and a.cls == b.cls
+            ca, cb = a.corners(), b.corners()   # same rectangle, possibly another corner order
+            for p in ca:
+                assert np.min(np.hypot(*(cb - p).T)) < 0.05
+
+
 def test_large_patch_is_scaled_to_fit():
     patch = np.zeros((500, 900, 3), np.uint8)
     img, _, (b,) = transform_patch(patch, [Annotation(0, 450, 250, 800, 400, 0, OBB)],

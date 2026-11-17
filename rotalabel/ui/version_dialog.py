@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QF
 
 from .. import imageio
 from ..augment.mosaic import MosaicConfig, build_pools, generate_mosaic, make_mosaic, mosaic_splits
+from ..augment.parallel import default_workers
 from ..augment.pipeline import AugConfig
 from ..augment.version import (MAX_MULTIPLIER, TEST_TARGET, VersionConfig, draw_annotations,
                                generate_version, make_sample, next_version_dir, split_copies,
@@ -115,14 +116,14 @@ class VersionDialog(QDialog):
         mform.addWidget(self._mosaic_geo_group(mcfg))
         mform.addWidget(self._aug_group("3. 色彩 / 像素擴增", [], PHOTOMETRIC, mcfg.aug,
                                         rows=self.mosaic_aug_rows, tail=self._mosaic_scope_option(mcfg)))
-        mform.addWidget(_hint("切分比例、亂數種子、灰階與匯出格式沿用「一般擴增」頁的設定；Resize 不套用，"
+        mform.addWidget(_hint("切分比例、亂數種子、灰階、匯出格式與平行處理數沿用「一般擴增」頁的設定；Resize 不套用，"
                               "輸出大小就是背景範圍。"))
         mform.addStretch(1)
 
         self.tabs = QTabWidget()
         self.tabs.addTab(self._scroll(form_widget), "一般擴增")
         self.tabs.addTab(self._scroll(mosaic_widget), "拼接擴增")
-        self.tabs.setMinimumWidth(620)
+        self.tabs.setMinimumWidth(650)
         self.tabs.setCurrentIndex(1 if project.settings.get("version_tab") == "mosaic" else 0)
 
         # preview
@@ -423,6 +424,13 @@ class VersionDialog(QDialog):
             self.fmt_boxes[key] = cb
             row.addWidget(cb)
         f.addRow("匯出格式", row)
+        self.sp_workers = self._spin(0, 256, cfg.workers)
+        self.sp_workers.setSpecialValueText("自動")
+        row = QHBoxLayout()
+        row.addWidget(self.sp_workers)
+        row.addWidget(QLabel(f"（本機 {os.cpu_count() or 1} 執行緒；自動 = {default_workers()}）"))
+        row.addStretch(1)
+        f.addRow("平行處理數", row)
         f.addRow(_hint("YOLO(bbox) 會把旋轉框轉成外接矩形；YOLO-OBB / DOTA / COCO-OBB 會把 bbox 視為 0° 旋轉框。"))
         return g
 
@@ -455,7 +463,8 @@ class VersionDialog(QDialog):
             resize_mode=self.cmb_resize.currentData(), resize_w=self.sp_rw.value(), resize_h=self.sp_rh.value(),
             grayscale=self.cb_gray.isChecked(), multiplier=self.sp_mult.value(),
             min_visibility=self.sp_vis.value(),
-            formats=[k for k, cb in self.fmt_boxes.items() if cb.isChecked()], aug=aug)
+            formats=[k for k, cb in self.fmt_boxes.items() if cb.isChecked()],
+            workers=self.sp_workers.value(), aug=aug)
 
     def _changed(self, *_):
         resize_on = self.cmb_resize.currentData() != "none"

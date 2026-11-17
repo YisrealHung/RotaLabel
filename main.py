@@ -1,12 +1,15 @@
+import multiprocessing
 import sys
-
-import rotalabel.ui  # noqa: F401  (must run before PySide6 is imported: fixes Qt DLL loading in conda)
-from PySide6.QtWidgets import QApplication
-
-from rotalabel.ui.main_window import MainWindow
 
 
 def main():
+    # Qt is imported here, not at module level: dataset generation starts worker processes, and on
+    # Windows each one re-imports this file; they must not load Qt.
+    import rotalabel.ui  # noqa: F401  (must run before PySide6 is imported: fixes Qt DLL loading in conda)
+    from PySide6.QtWidgets import QApplication
+
+    from rotalabel.ui.main_window import MainWindow
+
     def _excepthook(exc_type, exc_value, exc_tb):
         import traceback
         if sys.stderr is not None:
@@ -25,4 +28,5 @@ def main():
 
 
 if __name__ == "__main__":
+    multiprocessing.freeze_support()   # needed when packaged as an .exe
     main()

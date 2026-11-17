@@ -14,6 +14,8 @@ class CocoWriter(BaseWriter):
     Category ids are 1-based (category id = class index + 1).
     """
 
+    per_image_labels = False   # one JSON per split, accumulated in memory
+
     def __init__(self, out_dir, class_names):
         super().__init__(out_dir, class_names)
         self.data: dict[str, dict] = {}

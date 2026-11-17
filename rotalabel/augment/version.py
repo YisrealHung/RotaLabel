@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -14,6 +15,7 @@ from .. import imageio
 from ..exporters import FORMATS
 from ..model import Annotation
 from .geometric import preprocess_matrix
+from .parallel import run_tasks
 from .pipeline import AugConfig, augment, transform_annotations, warp
 
 
@@ -31,6 +33,7 @@ class VersionConfig:
     multiplier: int = 3           # outputs per train/valid image, including the original (max 100)
     min_visibility: float = 30    # percent of a box that must remain after augmentation
     formats: list[str] = field(default_factory=lambda: ["yolo_obb"])
+    workers: int = 0              # parallel processes for generation; 0 = automatic (~ physical cores)
     aug: AugConfig = field(default_factory=AugConfig)
 
     def to_dict(self) -> dict:
@@ -114,6 +117,33 @@ def _unique_stem(stem: str, used: set[str], copies: int = 1) -> str:
     return s
 
 
+_worker_cfg: tuple | None = None   # (VersionConfig, writers), set once per worker process
+
+
+def _set_worker_cfg(cfg: VersionConfig, writers: list) -> None:
+    global _worker_cfg
+    _worker_cfg = (cfg, writers)
+
+
+def _version_task(task):
+    """Worker: read one source image, render all its output copies, write the JPG and per-image label
+    files. Returns the labels for the main process (COCO JSON stays single-writer)."""
+    split, name, path, anns, stems, ss = task
+    cfg, writers = _worker_cfg
+    img = imageio.imread(path)
+    if img is None:
+        return split, name, []
+    rng = np.random.default_rng(ss)
+    results = []
+    for k, out_stem in enumerate(stems):
+        out_img, out_anns = make_sample(img, anns, cfg, rng, augmented=k > 0)
+        h, w = out_img.shape[:2]
+        fname = f"{out_stem}.jpg"
+        worker_export(writers, split, fname, imageio.encode(out_img, ".jpg"), w, h, out_anns)
+        results.append((fname, w, h, out_anns))
+    return split, name, results
+
+
 def source_names(project, cfg: VersionConfig) -> list[str]:
     return [n for n in project.images if not cfg.skip_unannotated or project.box_count(n) > 0]
 
@@ -121,6 +151,30 @@ def source_names(project, cfg: VersionConfig) -> list[str]:
 def make_writers(out: Path, formats: list[str], class_names: list[str]) -> dict:
     """One writer per format; several formats each get their own sub folder."""
     return {fmt: FORMATS[fmt](out / fmt if len(formats) > 1 else out, class_names) for fmt in formats}
+
+
+def prepare_dirs(writers: dict, splits) -> None:
+    """Create every image folder up front so worker processes only write files into them."""
+    for s in splits:
+        for wr in writers.values():
+            wr.image_dir(s)
+
+
+def worker_export(writers: list, split: str, fname: str, data: bytes, w: int, h: int, anns) -> None:
+    """In a worker: write the image for every format, plus the per-image label files (YOLO / DOTA)."""
+    for wr in writers:
+        with open(os.path.join(wr.image_dir(split), fname), "wb") as f:
+            f.write(data)
+        if wr.per_image_labels:
+            wr.write_labels(split, fname, w, h, anns)
+
+
+def main_commit(writers: dict, split: str, fname: str, w: int, h: int, anns) -> None:
+    """In the main process: record the split and add labels for the accumulating formats (COCO)."""
+    for wr in writers.values():
+        wr.used_splits.add(split)
+        if not wr.per_image_labels:
+            wr.write_labels(split, fname, w, h, anns)
 
 
 def write_meta(out: Path, meta: dict) -> None:
@@ -139,34 +193,36 @@ def generate_version(project, cfg: VersionConfig, out_dir: str | Path,
     splits["test"] = splits["test"][:len(copies_of["test"])]   # test capped at TEST_TARGET images
     class_names = project.class_names()
     writers = make_writers(out, cfg.formats, class_names)
-    rng = np.random.default_rng(cfg.seed + 1)
     stats = {"train": 0, "valid": 0, "test": 0, "boxes": 0, "source_images": len(names)}
-    total = sum(len(v) for v in splits.values())
-    done = 0
-    used: set[str] = set()
 
+    # one task per source image, each with its own seed: same output whatever the number of workers
+    used: set[str] = set()
+    tasks = []
     for split in ("train", "valid", "test"):
         for name, copies in zip(splits[split], copies_of[split]):
-            if cancelled and cancelled():
-                stats["cancelled"] = True
-                return stats
-            if progress:
-                progress(done, total, name)
-            img = imageio.imread(project.image_path(name))
-            done += 1
-            if img is None:
-                continue
-            anns = list(project.get(name).annotations)
             stem = _unique_stem(Path(name).stem, used, copies)
-            for k, out_stem in enumerate(_output_stems(stem, copies)):
-                out_img, out_anns = make_sample(img, anns, cfg, rng, augmented=k > 0)
-                fname = f"{out_stem}.jpg"
-                data = imageio.encode(out_img, ".jpg")
-                h, w = out_img.shape[:2]
-                for wr in writers.values():
-                    wr.add(split, fname, data, w, h, out_anns)
-                stats[split] += 1
-                stats["boxes"] += len(out_anns)
+            tasks.append([split, name, str(project.image_path(name)), list(project.get(name).annotations),
+                          _output_stems(stem, copies)])
+    for t, ss in zip(tasks, np.random.SeedSequence(cfg.seed + 1).spawn(len(tasks))):
+        t.append(ss)
+    total = len(tasks)
+    if progress:
+        progress(0, total, "")
+
+    prepare_dirs(writers, {t[0] for t in tasks})
+    done = 0
+    for split, name, results in run_tasks(_version_task, tasks, cfg.workers, _set_worker_cfg,
+                                          (cfg, list(writers.values())), cancelled):
+        done += 1
+        if progress:
+            progress(done, total, name)
+        for fname, w, h, out_anns in results:
+            main_commit(writers, split, fname, w, h, out_anns)
+            stats[split] += 1
+            stats["boxes"] += len(out_anns)
+    if done < total:
+        stats["cancelled"] = True
+        return stats
 
     for wr in writers.values():
         wr.finish()

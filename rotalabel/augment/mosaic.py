@@ -24,11 +24,13 @@ import cv2
 import numpy as np
 
 from .. import geometry, imageio
-from ..model import Annotation
+from ..model import BBOX, Annotation
 from . import geometric as G
+from .parallel import run_tasks
 from .photometric import apply_photometric
 from .pipeline import AugConfig, transform_annotations
-from .version import VersionConfig, make_writers, source_names, split_items, write_meta
+from .version import (VersionConfig, main_commit, make_writers, prepare_dirs, source_names, split_items,
+                      worker_export, write_meta)
 
 SPLITS = ("train", "valid", "test")
 GRID = 4                  # placement works on a 4 px grid (occupancy checked per 4x4 block, conservatively)
@@ -100,6 +102,25 @@ def extract_patch(img: np.ndarray, anns: list[Annotation], padding: int = 0):
     patch = img[y0:y1, x0:x1].copy()
     boxes = transform_annotations(anns, G.translate(-x0, -y0), x1 - x0, y1 - y0, 0.0)
     return (patch, boxes) if boxes else None
+
+
+def similar_anns(anns: list[Annotation], m: np.ndarray) -> list[Annotation]:
+    """Map boxes through a similarity transform (flip / rotation / uniform scale / shift).
+    A rectangle stays a rectangle, so this is exact and needs no clipping or min-area-rect fitting,
+    as long as the boxes end up inside the image (true for patches: they contain all their boxes)."""
+    out = []
+    for a in anns:
+        c = geometry.transform_points(a.corners(), m)
+        if a.kind == BBOX:
+            x0, y0, x1, y1 = geometry.aabb(c)
+            out.append(Annotation(a.cls, (x0 + x1) / 2, (y0 + y1) / 2, x1 - x0, y1 - y0, 0.0, BBOX))
+            continue
+        e1, e2 = c[1] - c[0], c[2] - c[1]
+        cx, cy = c.mean(axis=0)
+        ang = geometry.normalize_angle(math.degrees(math.atan2(e1[1], e1[0])))
+        out.append(Annotation(a.cls, float(cx), float(cy), float(math.hypot(*e1)), float(math.hypot(*e2)), ang,
+                              a.kind))
+    return out
 
 
 @dataclass
@@ -187,7 +208,7 @@ def render_piece(pc: Piece, max_w: float, max_h: float, shrink: float = 1.0):
                          borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
     mask = cv2.warpAffine(np.full((h, w), 255, np.uint8), m[:2], (ow, oh), flags=cv2.INTER_LINEAR,
                           borderMode=cv2.BORDER_CONSTANT, borderValue=0)
-    return img, mask.astype(np.float32) / 255.0, transform_annotations(pc.anns, m, ow, oh, 0.0)
+    return img, mask.astype(np.float32) / 255.0, similar_anns(pc.anns, m)
 
 
 def transform_patch(patch: np.ndarray, anns: list[Annotation], cfg: MosaicConfig,
@@ -316,7 +337,7 @@ def layout_mosaic(pieces: list[Piece], cfg: MosaicConfig, rng: np.random.Generat
                 if spot is None:
                     continue
                 x, y = spot
-                boxes = transform_annotations(anns, G.translate(x, y), W, H, 0.0)
+                boxes = similar_anns(anns, G.translate(x, y))
                 if cfg.allow_overlap:
                     occ.protect_boxes(boxes, gap)
                 else:
@@ -353,16 +374,17 @@ def make_mosaic(pool: list[tuple[np.ndarray, list[Annotation]]], cfg: MosaicConf
         pieces.append(random_piece(patch, anns, cfg, rng, angle=ang))
     bg = edge_mean_color([p.patch for p in pieces])
 
-    canvas = np.empty((H, W, 3), np.float32)
-    canvas[:] = bg
+    # uint8 canvas; blending is done only inside each patch's own region (much less memory traffic)
+    color = np.clip(np.round(bg), 0, 255).astype(np.uint8)
+    out = np.tile(np.tile(color, W), (H, 1)).reshape(H, W, 3)   # ~7x faster than out[:] = color
     boxes: list[Annotation] = []
     for p in layout_mosaic(pieces, cfg, rng):
         h, w = p.img.shape[:2]
-        a = p.alpha[..., None]
-        region = canvas[p.y:p.y + h, p.x:p.x + w]
-        canvas[p.y:p.y + h, p.x:p.x + w] = p.img.astype(np.float32) * a + region * (1 - a)
+        region = out[p.y:p.y + h, p.x:p.x + w]
+        r = region.astype(np.float32)
+        r += (p.img.astype(np.float32) - r) * p.alpha[..., None]
+        np.copyto(region, (r + 0.5).astype(np.uint8))
         boxes += p.anns
-    out = np.clip(canvas, 0, 255).astype(np.uint8)
     if cfg.photometric_scope == "canvas" and cfg.aug.any_enabled():
         out = apply_photometric(out, cfg.aug, rng)
     if grayscale:
@@ -386,6 +408,24 @@ def build_pools(project, splits: dict[str, list[str]], padding: int):
     return pools
 
 
+_worker_state: tuple | None = None   # (pools, MosaicConfig, grayscale, writers), set once per worker process
+
+
+def _set_worker_state(pools, mcfg: MosaicConfig, grayscale: bool, writers: list | None = None) -> None:
+    global _worker_state
+    _worker_state = (pools, mcfg, grayscale, writers or [])
+
+
+def _mosaic_task(task):
+    """Worker: render one mosaic, write its JPG and per-image label files; returns the labels."""
+    split, fname, ss = task
+    pools, mcfg, grayscale, writers = _worker_state
+    img, anns = make_mosaic(pools[split], mcfg, np.random.default_rng(ss), grayscale=grayscale)
+    h, w = img.shape[:2]
+    worker_export(writers, split, fname, imageio.encode(img, ".jpg"), w, h, anns)
+    return split, fname, w, h, anns
+
+
 def mosaic_splits(project, vcfg: VersionConfig) -> dict[str, list[str]]:
     """Source images per split, following the ratios / seed / skip setting of the normal page.
     Images without boxes never yield a patch, so they are always left out here."""
@@ -404,29 +444,31 @@ def generate_mosaic(project, vcfg: VersionConfig, mcfg: MosaicConfig, out_dir: s
     pools = build_pools(project, splits, int(mcfg.padding))
     class_names = project.class_names()
     writers = make_writers(out, vcfg.formats, class_names)
-    rng = np.random.default_rng(vcfg.seed + 2)
     counts = {s: (mcfg.counts()[s] if pools[s] else 0) for s in SPLITS}
     stats = {"train": 0, "valid": 0, "test": 0, "boxes": 0,
              "source_images": sum(len(v) for v in splits.values()),
              "patches": {s: len(pools[s]) for s in SPLITS}}
-    total = sum(counts.values())
+    # one task per mosaic, each with its own seed: same output whatever the number of workers
+    tasks = [(split, f"mosaic_{i + 1:05d}.jpg")
+             for i, split in enumerate(s for s in SPLITS for _ in range(counts[s]))]
+    seeds = np.random.SeedSequence(vcfg.seed + 2).spawn(len(tasks))
+    tasks = [(split, fname, ss) for (split, fname), ss in zip(tasks, seeds)]
+    total = len(tasks)
+    if progress:
+        progress(0, total, "")
+    prepare_dirs(writers, {t[0] for t in tasks})
     done = 0
-    for split in SPLITS:
-        for _ in range(counts[split]):
-            if cancelled and cancelled():
-                stats["cancelled"] = True
-                return stats
-            fname = f"mosaic_{done + 1:05d}.jpg"
-            if progress:
-                progress(done, total, fname)
-            img, anns = make_mosaic(pools[split], mcfg, rng, grayscale=vcfg.grayscale)
-            data = imageio.encode(img, ".jpg")
-            h, w = img.shape[:2]
-            for wr in writers.values():
-                wr.add(split, fname, data, w, h, anns)
-            stats[split] += 1
-            stats["boxes"] += len(anns)
-            done += 1
+    for split, fname, w, h, anns in run_tasks(_mosaic_task, tasks, vcfg.workers, _set_worker_state,
+                                              (pools, mcfg, vcfg.grayscale, list(writers.values())), cancelled):
+        main_commit(writers, split, fname, w, h, anns)
+        stats[split] += 1
+        stats["boxes"] += len(anns)
+        done += 1
+        if progress:
+            progress(done, total, fname)
+    if done < total:
+        stats["cancelled"] = True
+        return stats
     for wr in writers.values():
         wr.finish()
     if progress:
