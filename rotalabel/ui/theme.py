@@ -93,6 +93,17 @@ QGroupBox {{ background: {p['panel']}; border: 1px solid {p['border']}; border-r
              margin-top: 22px; padding: 12px 10px 10px 10px; }}
 QGroupBox::title {{ subcontrol-origin: margin; left: 4px; top: 0px; padding: 0 4px; color: {p['text']}; font-weight: bold; }}
 
+QTabWidget::pane {{ border: 1px solid {p['border']}; border-radius: 8px; background: {p['bg']}; top: -1px;
+                    padding: 6px 0 0 4px; }}
+QTabWidget::tab-bar {{ left: 8px; }}
+QTabBar {{ background: transparent; }}
+QTabBar::tab {{ background: {p['panel2']}; color: {p['muted']}; border: 1px solid {p['border']};
+               border-bottom: none; border-top-left-radius: 7px; border-top-right-radius: 7px;
+               padding: 6px 16px; margin-right: 4px; }}
+QTabBar::tab:hover {{ color: {p['text']}; }}
+QTabBar::tab:selected {{ background: {p['bg']}; color: {p['text']}; font-weight: bold;
+                        border-bottom: 2px solid {p['accent']}; }}
+
 QScrollArea {{ border: none; background: transparent; }}
 QScrollArea > QWidget > QWidget {{ background: transparent; }}
 QScrollBar:vertical {{ background: transparent; width: 10px; margin: 2px; }}
