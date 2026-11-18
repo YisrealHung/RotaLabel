@@ -193,6 +193,46 @@ def test_yolo_obb_folder_is_loaded_and_edits_go_to_own_folder(tmp_path):
     assert (root / "classes.txt").read_text(encoding="utf-8").split() == ["nail", "screw"]
 
 
+@pytest.mark.parametrize("with_classes_txt", [True, False])
+def test_dota_folder_is_loaded_and_edits_go_to_own_folder(tmp_path, with_classes_txt):
+    root = tmp_path / "imgs"
+    root.mkdir()
+    for n in ("a.jpg", "b.jpg", "c.jpg"):
+        imageio.imwrite(root / n, np.zeros((H, W, 3), np.uint8))
+    if with_classes_txt:
+        (root / "classes.txt").write_text("nail\nscrew\n", encoding="utf-8")
+    # like O2-RT-DETR/images: pixel corners + class name + difficult; b has DOTA headers, c no file
+    (root / "a.txt").write_text("30 40 70 40 70 60 30 60 screw 0\n110 30 130 30 130 70 110 70 nail 0\n",
+                                encoding="utf-8")
+    (root / "b.txt").write_text("imagesource:GoogleEarth\ngsd:0.5\n10 10 50 10 50 30 10 30 nail 1\n",
+                                encoding="utf-8")
+    source = {f.name: f.read_bytes() for f in root.glob("*.txt")}
+    p = Project.open(root)
+    assert p.label_format == "dota" and p.output_dir == root / "rotalabel_labels"
+    assert p.auto_imported == (2, 3)
+    assert p.class_names() == (["nail", "screw"] if with_classes_txt else ["screw", "nail"])
+    a = p.get("a.jpg").annotations
+    assert [p.class_names()[x.cls] for x in a] == ["screw", "nail"]
+    assert a[0].corners().mean(axis=0) == pytest.approx([50, 50])
+    # edits are written as DOTA into the output folder; the source files stay untouched
+    p.get("a.jpg").annotations = a[:1]
+    p.save_annotations("a.jpg")
+    lines = (root / "rotalabel_labels/a.txt").read_text(encoding="utf-8").splitlines()
+    assert lines[0] == "imagesource:rotalabel" and len(lines) == 3 and lines[2].split()[8:] == ["screw", "0"]
+    assert {f.name: f.read_bytes() for f in root.glob("*.txt")} == source
+    q = Project.open(root)
+    assert q.label_format == "dota" and q.auto_imported == (0, 0) and len(q.get("a.jpg").annotations) == 1
+
+
+def test_unknown_txt_next_to_images_is_not_adopted(tmp_path):
+    root = tmp_path / "imgs"
+    root.mkdir()
+    imageio.imwrite(root / "a.png", np.zeros((H, W, 3), np.uint8))
+    (root / "a.txt").write_text("this is just a note about the photo\n", encoding="utf-8")
+    p = Project.open(root)
+    assert "label_format" not in p.settings and p.auto_imported == (0, 0)
+
+
 def test_label_output_format_and_folder_can_change(tmp_path):
     root = _yolo_obb_folder(tmp_path)
     p = Project.open(root)

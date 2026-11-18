@@ -336,7 +336,8 @@ class MainWindow(QMainWindow):
         n_img, n_box = self.project.auto_imported
         if n_img:
             self.statusBar().showMessage(
-                f"已載入資料夾內的 YOLO-OBB 標註：{n_img} 張圖片、{n_box} 個框（原檔不會被修改）；"
+                f"已載入資料夾內的 {LABEL_FORMATS.get(self.project.label_format, '')} 標註："
+                f"{n_img} 張圖片、{n_box} 個框（原檔不會被修改）；"
                 f"修改後的標註存到 {self._output_text()}", 15000)
         self.canvas.classes = self.project.classes
         self.class_panel.set_project(self.project)

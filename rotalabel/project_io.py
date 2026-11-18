@@ -14,10 +14,11 @@ files to a folder of their own, in ``settings["label_format"]`` ("dota" or "yolo
 to RotaLabel, so its files are always rewritten; YOLO-OBB output also gets a classes.txt there.
 Without label_dir the DOTA files go next to the images as described above.
 
-YOLO-OBB folders: when a folder without RotaLabel annotations already holds YOLO-OBB .txt files next to
-its images (e.g. from an auto-labeler), those files are loaded on open (class ids kept, names from
-classes.txt) and are treated as read-only source data; edits go to ``<folder>/rotalabel_labels/`` as
-YOLO-OBB (``cls x1 y1 ... x4 y4``, normalized). Format and folder can be changed later.
+Existing label folders: when a folder without RotaLabel annotations already holds YOLO-OBB or DOTA .txt
+files next to its images (e.g. from an auto-labeler), those files are loaded on open and are treated as
+read-only source data; edits go to ``<folder>/rotalabel_labels/`` in the same format
+(YOLO-OBB: ``cls x1 y1 ... x4 y4`` normalized, class ids kept, names from classes.txt;
+DOTA: ``x1 y1 ... x4 y4 classname difficult`` in pixels). Format and folder can be changed later.
 
 Folders labeled before the rename use <folder>/bboxer_project/; that folder keeps being
 used as-is (not moved), so existing annotations and exported data.yaml paths stay valid.
@@ -35,7 +36,7 @@ META_DIRNAME = "rotalabel_project"
 SIDECAR_HEADER = "imagesource:rotalabel"   # DOTA header line marking files we own
 DOTA, YOLO_OBB = "dota", "yolo_obb"         # side file formats (settings["label_format"])
 LABEL_FORMATS = {YOLO_OBB: "YOLO-OBB", DOTA: "DOTA"}
-DEFAULT_LABEL_DIR = "rotalabel_labels"      # output folder used for adopted YOLO-OBB folders
+DEFAULT_LABEL_DIR = "rotalabel_labels"      # output folder used for adopted YOLO-OBB / DOTA folders
 
 LEGACY_META_DIRNAMES = ("bboxer_project",)  # project folder name before the rename
 
@@ -68,7 +69,7 @@ class Project:
         self.images: list[str] = []
         self.annotations: dict[str, ImageAnnotations] = {}
         self.settings: dict = {}
-        self.auto_imported: tuple[int, int] = (0, 0)  # (images, boxes) loaded from YOLO-OBB files on open
+        self.auto_imported: tuple[int, int] = (0, 0)  # (images, boxes) loaded from YOLO-OBB / DOTA files on open
 
     @property
     def label_format(self) -> str:
@@ -120,8 +121,10 @@ class Project:
                     p.annotations[name] = ImageAnnotations.from_dict(json.loads(f.read_text(encoding="utf-8")))
                 except (ValueError, KeyError):
                     pass
-        if "label_format" not in p.settings and not p.annotations and p._has_yolo_obb_files():
-            p._adopt_yolo_obb()
+        if "label_format" not in p.settings and not p.annotations:
+            fmt = p._detect_label_files()
+            if fmt:
+                p._adopt_label_files(fmt)
         if not p.classes:
             p.classes.append(ClassDef("object", default_color(0)))
             p.save_meta()
@@ -142,30 +145,45 @@ class Project:
             return None
         return [t for t in lines if t]
 
-    def _has_yolo_obb_files(self) -> bool:
-        def is_obb_line(t):
-            if len(t) != 9:
-                return False
+    def _detect_label_files(self) -> str | None:
+        """Format of the foreign .txt files next to the images: YOLO_OBB, DOTA or None.
+        Decided by the first image whose file has box lines that all match one format."""
+        def nums(ts):
             try:
-                [float(v) for v in t]
+                [float(v) for v in ts]
             except ValueError:
                 return False
             return True
+
+        def is_yolo_obb(t):   # cls x1 y1 ... x4 y4 (normalized)
+            return len(t) == 9 and nums(t)
+
+        def is_dota(t):       # x1 y1 ... x4 y4 classname [difficult] (pixels)
+            return len(t) in (9, 10) and nums(t[:8]) and not nums(t[8:9])
+
         for name in self.images:
             lines = self._foreign_label_lines(name)
-            if lines and all(is_obb_line(t) for t in lines):
-                return True
-        return False
+            if not lines:
+                continue
+            lines = [t for t in lines if not t[0].startswith(("imagesource", "gsd"))]   # DOTA headers
+            if not lines:
+                continue
+            if all(is_yolo_obb(t) for t in lines):
+                return YOLO_OBB
+            if all(is_dota(t) for t in lines):
+                return DOTA
+        return None
 
-    def _adopt_yolo_obb(self) -> None:
-        """Load the YOLO-OBB files next to the images (left untouched), keeping class ids;
-        edits are written as YOLO-OBB to <folder>/rotalabel_labels/."""
+    def _adopt_label_files(self, fmt: str) -> None:
+        """Load the YOLO-OBB / DOTA files next to the images (left untouched); edits are written in the
+        same format to <folder>/rotalabel_labels/. YOLO-OBB keeps class ids, DOTA class names; both
+        take the class order from classes.txt when there is one."""
         from . import importers  # local import: importers imports this module's siblings
         names = importers._read_names(self.root)
         default_only = [c.name for c in self.classes] in ([], ["object"])
         if default_only:
             self.classes = [ClassDef(n, default_color(i)) for i, n in enumerate(names or [])]
-        self.settings["label_format"] = YOLO_OBB
+        self.settings["label_format"] = fmt
         self.settings["label_dir"] = DEFAULT_LABEL_DIR
         self.settings["label_source"] = "."  # where the original labels came from (informational)
         self.save_meta()
