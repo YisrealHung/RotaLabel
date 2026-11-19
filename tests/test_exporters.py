@@ -259,6 +259,15 @@ def test_yolo_obb_without_names_keeps_ids(tmp_path):
     assert p.get("a.png").annotations[0].cls == 2
 
 
+def test_class_counts(tmp_path):
+    p = _make_project(tmp_path, 3)          # every image: BOX (class 0) + ROT (class 1)
+    p.get("img2.png").annotations = [BOX, BOX, BOX]
+    p.add_class("unused")
+    boxes, images = p.class_counts()
+    assert boxes == {0: 5, 1: 2} and images == {0: 3, 1: 2}
+    assert boxes.get(2, 0) == 0
+
+
 def test_legacy_project_folder_still_opens(tmp_path):
     p = _make_project(tmp_path, 2)
     (p.root / "rotalabel_project").rename(p.root / "bboxer_project")  # folder labeled before the rename

@@ -81,7 +81,7 @@ class ImageDelegate(_Base):
 
 
 class ClassDelegate(_Base):
-    """DATA = (color, shortcut text)."""
+    """DATA = (color, shortcut text[, number of boxes of this class in the project])."""
 
     height = 32
 
@@ -91,18 +91,26 @@ class ClassDelegate(_Base):
         p.setRenderHint(QPainter.Antialiasing)
         rect = QRectF(option.rect).adjusted(2, 1, -2, -1)
         _background(p, option, rect)
-        color, key = index.data(DATA) or ("#888888", "")
+        data = index.data(DATA) or ("#888888", "")
+        color, key = data[0], data[1]
+        count = data[2] if len(data) > 2 else None
         cy = rect.center().y()
         p.setPen(Qt.NoPen)
         p.setBrush(QColor(color))
         p.drawRoundedRect(QRectF(rect.left() + 10, cy - 7, 14, 14), 4, 4)
         right = rect.right() - 8
+        small = _small(option.font)
         if key:
-            right = _pill(p, right, cy, key, QColor(pal["panel2"]), QColor(pal["muted"]), _small(option.font)) - 6
+            right = _pill(p, right, cy, key, QColor(pal["panel2"]), QColor(pal["muted"]), small) - 6
+        if count is not None:
+            bg = QColor(pal["accent"] if count else pal["border"])
+            bg.setAlpha(60 if count else 140)
+            right = _pill(p, right, cy, f"{count:,}", bg, QColor(pal["text"] if count else pal["muted"]), small) - 6
         p.setPen(QColor(pal["text"]))
         p.setFont(option.font)
-        p.drawText(QRectF(rect.left() + 34, rect.top(), right - rect.left() - 34, rect.height()),
-                   Qt.AlignVCenter | Qt.AlignLeft, index.data(Qt.DisplayRole) or "")
+        tr = QRectF(rect.left() + 34, rect.top(), right - rect.left() - 34, rect.height())
+        name = QFontMetrics(option.font).elidedText(index.data(Qt.DisplayRole) or "", Qt.ElideRight, int(tr.width()))
+        p.drawText(tr, Qt.AlignVCenter | Qt.AlignLeft, name)
         p.restore()
 
 

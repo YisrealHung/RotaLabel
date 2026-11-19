@@ -51,14 +51,29 @@ class ClassPanel(QWidget):
         self.list.blockSignals(True)
         self.list.clear()
         if self.project:
-            for i, c in enumerate(self.project.classes):
-                it = QListWidgetItem(c.name)
-                it.setData(DATA, (c.color, str(i + 1) if i < 9 else ""))
-                it.setToolTip(f"{c.name}" + (f"（快捷鍵 {i + 1}）" if i < 9 else ""))
-                self.list.addItem(it)
+            for c in self.project.classes:
+                self.list.addItem(QListWidgetItem(c.name))
         self.list.blockSignals(False)
+        self.update_counts()
         if self.list.count():
             self._set_row_silently(min(max(row, 0), self.list.count() - 1))
+
+    def update_counts(self):
+        """Refresh the per-class box count pills (cheap; called after every edit)."""
+        if not self.project:
+            return
+        boxes, images = self.project.class_counts()
+        for i, c in enumerate(self.project.classes):
+            it = self.list.item(i)
+            if it is None:
+                break
+            key = str(i + 1) if i < 9 else ""
+            n = boxes.get(i, 0)
+            data = (c.color, key, n)
+            if it.data(DATA) != data:
+                it.setData(DATA, data)
+            it.setToolTip(f"{c.name}：{n:,} 個框，分布在 {images.get(i, 0):,} 張圖片"
+                          + (f"（快捷鍵 {i + 1}）" if key else ""))
 
     def _set_row_silently(self, row: int):
         """Change the current row without re-classing the selected box (class_selected is not emitted)."""

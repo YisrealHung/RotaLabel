@@ -413,7 +413,7 @@ class MainWindow(QMainWindow):
         super().closeEvent(e)
 
     # ------------------------------------------------------------------ lists
-    def _refresh_image_item(self, row: int):
+    def _refresh_image_item(self, row: int, update_totals: bool = True):
         if not self.project or not (0 <= row < self.image_list.count()):
             return
         name = self.project.images[row]
@@ -422,11 +422,13 @@ class MainWindow(QMainWindow):
         it.setText(name)
         it.setData(DATA, n)
         it.setToolTip(f"{name}\n{n} 個框" if n else f"{name}\n尚未標註")
-        self._update_progress()
+        if update_totals:
+            self._update_progress()
 
     def _refresh_image_items(self):
         for r in range(self.image_list.count()):
-            self._refresh_image_item(r)
+            self._refresh_image_item(r, update_totals=False)
+        self._update_progress()   # once, not once per image
 
     def _update_progress(self):
         if not self.project:
@@ -438,6 +440,7 @@ class MainWindow(QMainWindow):
         self.progress_label.setText(f"已標註 {done} / {total} 張（{pct}%）· {boxes} 個框")
         self.progress_bar.setMaximum(max(total, 1))
         self.progress_bar.setValue(done)
+        self.class_panel.update_counts()   # per-class box counts in the class list
 
     def _apply_filter(self, text: str):
         t = text.lower()
