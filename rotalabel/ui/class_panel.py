@@ -18,6 +18,7 @@ class ClassPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.project = None
+        self._anns: list = []   # annotations of the image currently shown (for the count pills)
         self.list = QListWidget()
         self.list.setItemDelegate(ClassDelegate(self.list))
         self.list.setMouseTracking(True)
@@ -42,6 +43,7 @@ class ClassPanel(QWidget):
 
     def set_project(self, project):
         self.project = project
+        self._anns = []
         self.reload()
         if project and project.classes:
             self._set_row_silently(0)
@@ -58,22 +60,26 @@ class ClassPanel(QWidget):
         if self.list.count():
             self._set_row_silently(min(max(row, 0), self.list.count() - 1))
 
-    def update_counts(self):
-        """Refresh the per-class box count pills (cheap; called after every edit)."""
+    def update_counts(self, anns=None):
+        """Show how many boxes of each class the current image has (``anns``: its annotations).
+        Classes without boxes on this image show no number."""
+        if anns is not None:
+            self._anns = list(anns)
         if not self.project:
             return
-        boxes, images = self.project.class_counts()
+        counts: dict[int, int] = {}
+        for a in self._anns:
+            counts[a.cls] = counts.get(a.cls, 0) + 1
         for i, c in enumerate(self.project.classes):
             it = self.list.item(i)
             if it is None:
                 break
             key = str(i + 1) if i < 9 else ""
-            n = boxes.get(i, 0)
-            data = (c.color, key, n)
+            n = counts.get(i, 0)
+            data = (c.color, key, n or None)
             if it.data(DATA) != data:
                 it.setData(DATA, data)
-            it.setToolTip(f"{c.name}：{n:,} 個框，分布在 {images.get(i, 0):,} 張圖片"
-                          + (f"（快捷鍵 {i + 1}）" if key else ""))
+            it.setToolTip(f"{c.name}：此圖 {n} 個框" + (f"（快捷鍵 {i + 1}）" if key else ""))
 
     def _set_row_silently(self, row: int):
         """Change the current row without re-classing the selected box (class_selected is not emitted)."""

@@ -296,19 +296,6 @@ class Project:
         ia = self.annotations.get(name)
         return len(ia.annotations) if ia else 0
 
-    def class_counts(self) -> tuple[dict[int, int], dict[int, int]]:
-        """Per class index: (number of boxes, number of images containing that class)."""
-        boxes: dict[int, int] = {}
-        images: dict[int, int] = {}
-        for ia in self.annotations.values():
-            seen = set()
-            for a in ia.annotations:
-                boxes[a.cls] = boxes.get(a.cls, 0) + 1
-                seen.add(a.cls)
-            for c in seen:
-                images[c] = images.get(c, 0) + 1
-        return boxes, images
-
     def class_names(self) -> list[str]:
         return [c.name for c in self.classes]
 

@@ -81,7 +81,7 @@ class ImageDelegate(_Base):
 
 
 class ClassDelegate(_Base):
-    """DATA = (color, shortcut text[, number of boxes of this class in the project])."""
+    """DATA = (color, shortcut text[, number of boxes of this class on the current image, or None])."""
 
     height = 32
 
@@ -102,10 +102,10 @@ class ClassDelegate(_Base):
         small = _small(option.font)
         if key:
             right = _pill(p, right, cy, key, QColor(pal["panel2"]), QColor(pal["muted"]), small) - 6
-        if count is not None:
-            bg = QColor(pal["accent"] if count else pal["border"])
-            bg.setAlpha(60 if count else 140)
-            right = _pill(p, right, cy, f"{count:,}", bg, QColor(pal["text"] if count else pal["muted"]), small) - 6
+        if count:
+            bg = QColor(pal["accent"])
+            bg.setAlpha(60)
+            right = _pill(p, right, cy, f"{count:,}", bg, QColor(pal["text"]), small) - 6
         p.setPen(QColor(pal["text"]))
         p.setFont(option.font)
         tr = QRectF(rect.left() + 34, rect.top(), right - rect.left() - 34, rect.height())

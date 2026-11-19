@@ -384,6 +384,7 @@ class MainWindow(QMainWindow):
         self.project.settings["last_image"] = name
         self._refresh_ann_list()
         self._update_info()
+        self._update_class_counts()
         if w:
             ia.width, ia.height = w, h
         else:
@@ -440,7 +441,18 @@ class MainWindow(QMainWindow):
         self.progress_label.setText(f"已標註 {done} / {total} 張（{pct}%）· {boxes} 個框")
         self.progress_bar.setMaximum(max(total, 1))
         self.progress_bar.setValue(done)
-        self.class_panel.update_counts()   # per-class box counts in the class list
+        self._update_class_counts()
+
+    def _update_class_counts(self):
+        """Per-class box counts of the current image, shown in the class list."""
+        name = self.current_name()
+        if not name:
+            anns = []
+        elif self.canvas.pixmap_item is None:   # image unreadable: its stored boxes are kept, count those
+            anns = self.project.get(name).annotations
+        else:
+            anns = self.canvas.annotations()
+        self.class_panel.update_counts(anns)
 
     def _apply_filter(self, text: str):
         t = text.lower()
