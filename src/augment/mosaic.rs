@@ -755,21 +755,21 @@ pub fn build_pools(
 ) -> HashMap<String, Vec<(RgbImage, Vec<Annotation>)>> {
     let mut pools = HashMap::new();
     for split in SPLITS {
-        let mut pool = Vec::new();
-        if let Some(names) = splits.get(split) {
-            for name in names {
-                let Some(img) = imageio::imread(&project.image_path(name)) else {
-                    continue;
-                };
-                let anns = project
-                    .get(name)
-                    .map(|ia| ia.annotations.as_slice())
-                    .unwrap_or(&[]);
-                if let Some(p) = extract_patch(&img, anns, padding) {
-                    pool.push(p);
-                }
-            }
-        }
+        let pool = if let Some(names) = splits.get(split) {
+            names
+                .par_iter()
+                .filter_map(|name| {
+                    let img = imageio::imread(&project.image_path(name))?;
+                    let anns = project
+                        .get(name)
+                        .map(|ia| ia.annotations.as_slice())
+                        .unwrap_or(&[]);
+                    extract_patch(&img, anns, padding)
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         pools.insert(split.to_string(), pool);
     }
     pools

@@ -339,6 +339,9 @@ impl RotaLabelApp {
         let mut open_picker = false;
         let mut open_version = false;
         let mut do_flush = false;
+        let mut do_copy = false;
+        let mut paste_payload: Option<String> = None;
+        let mut do_paste = false;
         let mut step_delta = 0isize;
         let mut do_fit = false;
         let mut do_cycle_labels = false;
@@ -346,6 +349,14 @@ impl RotaLabelApp {
         ctx.input(|i| {
             let ctrl = i.modifiers.ctrl;
             let shift = i.modifiers.shift;
+
+            for ev in &i.events {
+                match ev {
+                    egui::Event::Copy => do_copy = true,
+                    egui::Event::Paste(txt) => paste_payload = Some(txt.clone()),
+                    _ => {}
+                }
+            }
 
             if i.key_pressed(Key::F1) {
                 self.show_help = true;
@@ -370,13 +381,10 @@ impl RotaLabelApp {
                 }
             }
             if ctrl && i.key_pressed(Key::C) {
-                self.canvas.copy_selected();
+                do_copy = true;
             }
             if ctrl && i.key_pressed(Key::V) {
-                let n = self.project.as_ref().map(|p| p.classes.len()).unwrap_or(0);
-                if self.canvas.paste(n) {
-                    modified = true;
-                }
+                do_paste = true;
             }
             if !ctrl {
                 if i.key_pressed(Key::A) {
@@ -452,6 +460,29 @@ impl RotaLabelApp {
             }
         });
 
+        if do_copy {
+            self.canvas.copy_selected();
+            if !self.canvas.clipboard.is_empty() {
+                if let Ok(json) = serde_json::to_string(&self.canvas.clipboard) {
+                    ctx.copy_text(json);
+                }
+                self.set_status(ctx, "已複製框", 1.5);
+            }
+        }
+        if do_paste || paste_payload.is_some() {
+            if self.canvas.clipboard.is_empty() {
+                if let Some(ref txt) = paste_payload {
+                    if let Ok(anns) = serde_json::from_str::<Vec<crate::model::Annotation>>(txt) {
+                        self.canvas.clipboard = anns;
+                    }
+                }
+            }
+            let n = self.project.as_ref().map(|p| p.classes.len()).unwrap_or(0);
+            if self.canvas.paste(n) {
+                modified = true;
+                self.set_status(ctx, "已貼上框", 1.5);
+            }
+        }
         if open_picker {
             self.choose_folder(ctx);
         }

@@ -44,7 +44,11 @@ impl AugConfig {
             || self.crop > 0.0
             || self.translate_x > 0.0
             || self.translate_y > 0.0
-            || self.brightness > 0.0
+            || self.any_photometric_enabled()
+    }
+
+    pub fn any_photometric_enabled(&self) -> bool {
+        self.brightness > 0.0
             || self.exposure > 0.0
             || self.contrast > 0.0
             || self.saturation > 0.0
@@ -267,7 +271,11 @@ pub fn augment<R: Rng>(
     let (g, ow, oh) = sample_geometric(cfg, pw, ph, rng, pts_opt);
     let m = g.mul(&pre_m);
     let out = warp(img, &m, ow, oh);
-    let out = apply_photometric(&out, cfg, rng);
+    let out = if cfg.any_photometric_enabled() {
+        apply_photometric(&out, cfg, rng)
+    } else {
+        out
+    };
     let out_anns = transform_annotations(anns, &m, ow, oh, min_visibility);
     (out, out_anns)
 }

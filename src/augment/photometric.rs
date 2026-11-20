@@ -116,6 +116,9 @@ fn gaussian_blur_rgb(buf: &mut [f32], w: usize, h: usize, sigma: f32) {
 }
 
 pub fn apply_photometric<R: Rng>(img: &RgbImage, cfg: &AugConfig, rng: &mut R) -> RgbImage {
+    if !cfg.any_photometric_enabled() {
+        return img.clone();
+    }
     let w = img.width() as usize;
     let h = img.height() as usize;
     let raw = img.as_raw();
@@ -131,9 +134,19 @@ pub fn apply_photometric<R: Rng>(img: &RgbImage, cfg: &AugConfig, rng: &mut R) -
     if cfg.exposure > 0.0 {
         let e = uniform(rng, -cfg.exposure, cfg.exposure) / 100.0;
         let gamma = 2.0_f64.powf(-e * 2.0) as f32;
-        for v in &mut out {
-            let norm = (*v).clamp(0.0, 255.0) / 255.0;
-            *v = 255.0 * norm.powf(gamma);
+        if cfg.brightness <= 0.0 {
+            let mut lut = [0.0_f32; 256];
+            for (i, slot) in lut.iter_mut().enumerate() {
+                *slot = 255.0 * (i as f32 / 255.0).powf(gamma);
+            }
+            for v in &mut out {
+                *v = lut[(*v as usize).min(255)];
+            }
+        } else {
+            for v in &mut out {
+                let norm = (*v).clamp(0.0, 255.0) / 255.0;
+                *v = 255.0 * norm.powf(gamma);
+            }
         }
     }
 

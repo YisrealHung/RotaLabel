@@ -4,7 +4,8 @@ use std::path::Path;
 use image::RgbImage;
 use tempfile::TempDir;
 
-use rotalabel::augment::version::{output_stems, unique_stem};
+use rotalabel::augment::pipeline::AugConfig;
+use rotalabel::augment::version::{default_workers, generate_version, output_stems, unique_stem, VersionConfig};
 use rotalabel::exporters::{CocoWriter, DotaWriter};
 use rotalabel::imageio;
 use rotalabel::importers;
@@ -277,4 +278,63 @@ fn test_preview_visibility_matches_label_mode() {
     assert_eq!(preview_visibility(LabelMode::None, true), (true, false));
     assert_eq!(preview_visibility(LabelMode::Hidden, false), (false, false));
     assert_eq!(preview_visibility(LabelMode::Hidden, true), (false, false));
+}
+
+#[test]
+fn test_canvas_copy_paste_and_small_dataset_parallel_determinism() {
+    let mut c = CanvasState::default();
+    let a = Annotation::new(0, 30.0, 40.0, 20.0, 10.0, 15.0, BoxKind::Obb);
+    c.load_image(100, 100, vec![a], true);
+    c.select(Some(0));
+    c.copy_selected();
+    assert_eq!(c.clipboard.len(), 1);
+    assert!(c.paste(1));
+    assert_eq!(c.items.len(), 2);
+    assert_eq!(c.selected, Some(1));
+
+    let total_threads = std::thread::available_parallelism()
+        .map(|v| v.get())
+        .unwrap_or(1);
+    if total_threads >= 2 {
+        assert_eq!(default_workers(), total_threads - 1);
+    } else {
+        assert_eq!(default_workers(), 1);
+    }
+
+    let tmp = TempDir::new().unwrap();
+    let imgs = tmp.path().join("imgs");
+    make_images(&imgs, &["a.png", "b.png"]);
+    let mut p = Project::open(&imgs).unwrap();
+    p.add_class("obj");
+    for name in ["a.png", "b.png"] {
+        p.get_mut(name)
+            .annotations
+            .push(Annotation::new(0, 50.0, 50.0, 30.0, 20.0, 10.0, BoxKind::Obb));
+    }
+    let mut cfg = VersionConfig {
+        train: 100.0,
+        valid: 0.0,
+        test: 0.0,
+        multiplier: 5,
+        formats: vec!["yolo_obb".into()],
+        aug: AugConfig {
+            flip_h: true,
+            rotate: 20.0,
+            exposure: 15.0,
+            ..Default::default()
+        },
+        workers: 1,
+        ..Default::default()
+    };
+    let out1 = tmp.path().join("v1");
+    let s1 = generate_version(&p, &cfg, &out1, None, None).unwrap();
+    cfg.workers = 4;
+    let out4 = tmp.path().join("v4");
+    let s4 = generate_version(&p, &cfg, &out4, None, None).unwrap();
+    assert_eq!(s1.train, 10);
+    assert_eq!((s1.train, s1.boxes), (s4.train, s4.boxes));
+    assert_eq!(
+        std::fs::read_to_string(out1.join("train/labels/a_aug3.txt")).unwrap(),
+        std::fs::read_to_string(out4.join("train/labels/a_aug3.txt")).unwrap()
+    );
 }

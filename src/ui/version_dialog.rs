@@ -11,6 +11,7 @@ use image::RgbImage;
 use rand::Rng;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
+use rayon::prelude::*;
 
 use crate::augment::mosaic::{
     build_pools, generate_mosaic, make_mosaic, mosaic_splits, MosaicConfig,
@@ -80,6 +81,18 @@ struct PreviewTile {
     boxes: Vec<Annotation>,
 }
 
+struct PreviewImageData {
+    img: RgbImage,
+    boxes: Vec<Annotation>,
+}
+
+struct PreviewJobResult {
+    gen: u64,
+    loaded_normal: Option<(String, Arc<RgbImage>)>,
+    pool_cache: Option<Arc<(i32, Vec<(RgbImage, Vec<Annotation>)>)>>,
+    tiles: Vec<PreviewImageData>,
+}
+
 const GEOMETRIC_SPEC: [(&str, &str, &str, f64, f64, usize); 6] = [
     ("rotate", "任意角度旋轉", "± 度", 180.0, 15.0, 0),
     ("shear", "剪切 Shear", "± 度", 45.0, 10.0, 0),
@@ -146,10 +159,13 @@ pub struct VersionDialog {
     // Preview state
     preview_seed: u64,
     preview_name: Option<String>,
-    preview_img: Option<RgbImage>,
-    pool_cache: Option<(i32, Vec<(RgbImage, Vec<Annotation>)>)>,
+    preview_img: Option<Arc<RgbImage>>,
+    pool_cache: Option<Arc<(i32, Vec<(RgbImage, Vec<Annotation>)>)>>,
     preview_tiles: Vec<PreviewTile>,
-    preview_dirty: bool,
+    preview_gen: u64,
+    preview_scheduled_at: Option<f64>,
+    preview_job: Option<Arc<Mutex<Option<PreviewJobResult>>>>,
+    preview_loading: bool,
 
     // Generation worker
     worker: Option<Arc<Mutex<WorkerProgress>>>,
@@ -243,7 +259,10 @@ impl VersionDialog {
             preview_img: None,
             pool_cache: None,
             preview_tiles: Vec::new(),
-            preview_dirty: true,
+            preview_gen: 1,
+            preview_scheduled_at: Some(0.0),
+            preview_job: None,
+            preview_loading: false,
 
             worker: None,
             cancel_flag: Arc::new(AtomicBool::new(false)),
@@ -365,77 +384,122 @@ impl VersionDialog {
         }
         let mut rng = rand::thread_rng();
         let pick = names[rng.gen_range(0..names.len())].clone();
-        self.preview_img = imageio::imread(&project.image_path(&pick));
+        self.preview_img = None;
         self.preview_name = Some(pick);
-        self.preview_dirty = true;
+        self.preview_gen += 1;
+        self.preview_scheduled_at = Some(0.0);
     }
 
-    fn render_preview(&mut self, ctx: &egui::Context, project: &Project) {
-        self.preview_tiles.clear();
-        self.preview_dirty = false;
-        if self.tab == TabKind::Mosaic {
-            let mcfg = self.build_mosaic_config();
-            let need_rebuild = self
-                .pool_cache
+    fn start_preview_job(&mut self, ctx: &egui::Context, project: &Project) {
+        let gen = self.preview_gen;
+        let tab = self.tab;
+        let preview_seed = self.preview_seed;
+        let grayscale = self.grayscale;
+        let vcfg = self.build_version_config();
+        let mcfg = self.build_mosaic_config();
+        let preview_name = self.preview_name.clone();
+        let preview_img = self.preview_img.clone();
+        let pool_cache = self.pool_cache.clone();
+
+        let (normal_path, normal_anns) = if let Some(ref pname) = preview_name {
+            (
+                Some(project.image_path(pname)),
+                project
+                    .get(pname)
+                    .map(|ia| ia.annotations.clone())
+                    .unwrap_or_default(),
+            )
+        } else {
+            (None, Vec::new())
+        };
+
+        let mosaic_project = if tab == TabKind::Mosaic {
+            let need_rebuild = pool_cache
                 .as_ref()
-                .map(|(pad, _)| *pad != mcfg.padding)
+                .map(|c| c.0 != mcfg.padding)
                 .unwrap_or(true);
             if need_rebuild {
-                let mut names: Vec<String> = project
-                    .images
-                    .iter()
-                    .filter(|n| project.box_count(n) > 0)
-                    .cloned()
-                    .collect();
-                if names.len() > 60 {
-                    names.truncate(60);
-                }
-                let mut sp = std::collections::HashMap::new();
-                sp.insert("train".to_string(), names);
-                let pool = build_pools(project, &sp, mcfg.padding)
-                    .remove("train")
-                    .unwrap_or_default();
-                self.pool_cache = Some((mcfg.padding, pool));
+                Some(project.clone())
+            } else {
+                None
             }
-            let pool = &self.pool_cache.as_ref().unwrap().1;
-            if pool.is_empty() {
-                return;
-            }
-            let mut rng = ChaCha8Rng::seed_from_u64(self.preview_seed);
-            let (img, boxes) = make_mosaic(pool, &mcfg, &mut rng, self.grayscale);
-            let tex = rgb_to_texture(ctx, "mosaic_prev", &img);
-            self.preview_tiles.push(PreviewTile {
-                tex,
-                img_w: img.width(),
-                img_h: img.height(),
-                boxes,
-            });
-            return;
-        }
+        } else {
+            None
+        };
 
-        let Some(ref pname) = self.preview_name else {
-            return;
-        };
-        let Some(ref pimg) = self.preview_img else {
-            return;
-        };
-        let cfg = self.build_version_config();
-        let anns = project
-            .get(pname)
-            .map(|ia| ia.annotations.as_slice())
-            .unwrap_or(&[]);
-        let mut rng = ChaCha8Rng::seed_from_u64(self.preview_seed);
-        let aug_on = cfg.aug.any_enabled();
-        for k in 0..4 {
-            let (img, boxes) = make_sample(pimg, anns, &cfg, &mut rng, k > 0 && aug_on);
-            let tex = rgb_to_texture(ctx, &format!("prev_{k}"), &img);
-            self.preview_tiles.push(PreviewTile {
-                tex,
-                img_w: img.width(),
-                img_h: img.height(),
-                boxes,
-            });
-        }
+        let slot = Arc::new(Mutex::new(None));
+        self.preview_job = Some(slot.clone());
+        self.preview_loading = true;
+        let ctx_clone = ctx.clone();
+
+        std::thread::spawn(move || {
+            let mut result = PreviewJobResult {
+                gen,
+                loaded_normal: None,
+                pool_cache: None,
+                tiles: Vec::new(),
+            };
+
+            if tab == TabKind::Mosaic {
+                let cache_arc = if let Some(proj) = mosaic_project {
+                    let mut names: Vec<String> = proj
+                        .images
+                        .iter()
+                        .filter(|n| proj.box_count(n) > 0)
+                        .cloned()
+                        .collect();
+                    if names.len() > 60 {
+                        names.truncate(60);
+                    }
+                    let mut sp = std::collections::HashMap::new();
+                    sp.insert("train".to_string(), names);
+                    let pool = build_pools(&proj, &sp, mcfg.padding)
+                        .remove("train")
+                        .unwrap_or_default();
+                    let arc = Arc::new((mcfg.padding, pool));
+                    result.pool_cache = Some(arc.clone());
+                    Some(arc)
+                } else {
+                    pool_cache
+                };
+
+                if let Some(arc) = cache_arc {
+                    if !arc.1.is_empty() {
+                        let mut rng = ChaCha8Rng::seed_from_u64(preview_seed);
+                        let (img, boxes) = make_mosaic(&arc.1, &mcfg, &mut rng, grayscale);
+                        result.tiles.push(PreviewImageData { img, boxes });
+                    }
+                }
+            } else if let Some(pname) = preview_name {
+                let pimg_opt = preview_img.or_else(|| {
+                    normal_path
+                        .as_ref()
+                        .and_then(|p| imageio::imread(p))
+                        .map(Arc::new)
+                });
+                if let Some(pimg) = pimg_opt {
+                    result.loaded_normal = Some((pname, pimg.clone()));
+                    let aug_on = vcfg.aug.any_enabled();
+                    let tiles: Vec<PreviewImageData> = (0..4usize)
+                        .into_par_iter()
+                        .map(|k| {
+                            let seed = preview_seed
+                                .wrapping_add((k as u64).wrapping_mul(0x9E3779B97F4A7C15));
+                            let mut rng = ChaCha8Rng::seed_from_u64(seed);
+                            let (img, boxes) =
+                                make_sample(pimg.as_ref(), &normal_anns, &vcfg, &mut rng, k > 0 && aug_on);
+                            PreviewImageData { img, boxes }
+                        })
+                        .collect();
+                    result.tiles = tiles;
+                }
+            }
+
+            if let Ok(mut g) = slot.lock() {
+                *g = Some(result);
+            }
+            ctx_clone.request_repaint();
+        });
     }
 
     fn start_generate(&mut self, ctx: &egui::Context, project: &mut Project) {
@@ -544,8 +608,47 @@ impl VersionDialog {
             *label_mode = label_mode.cycle();
         }
 
-        if self.preview_dirty {
-            self.render_preview(ctx, project);
+        // Poll completed background preview job
+        let finished_preview = self
+            .preview_job
+            .as_ref()
+            .and_then(|arc| arc.try_lock().ok().and_then(|mut g| g.take()));
+        if let Some(res) = finished_preview {
+            self.preview_job = None;
+            self.preview_loading = false;
+            if let Some((pname, img)) = res.loaded_normal {
+                if self.preview_name.as_deref() == Some(pname.as_str()) {
+                    self.preview_img = Some(img);
+                }
+            }
+            if let Some(pool) = res.pool_cache {
+                self.pool_cache = Some(pool);
+            }
+            self.preview_tiles = res
+                .tiles
+                .into_iter()
+                .enumerate()
+                .map(|(k, t)| {
+                    let tex = rgb_to_texture(ctx, &format!("prev_{k}"), &t.img);
+                    PreviewTile {
+                        tex,
+                        img_w: t.img.width(),
+                        img_h: t.img.height(),
+                        boxes: t.boxes,
+                    }
+                })
+                .collect();
+            let _ = res.gen;
+        }
+
+        let now = ctx.input(|i| i.time);
+        if !self.preview_loading {
+            if let Some(due) = self.preview_scheduled_at {
+                if now >= due {
+                    self.preview_scheduled_at = None;
+                    self.start_preview_job(ctx, project);
+                }
+            }
         }
 
         let screen = ctx.screen_rect();
@@ -614,7 +717,18 @@ impl VersionDialog {
                         |ui| {
                             ui.horizontal(|ui| {
                                 ui.vertical(|ui| {
-                                    ui.strong("擴增預覽");
+                                    ui.horizontal(|ui| {
+                                        ui.strong("擴增預覽");
+                                        if self.preview_loading
+                                            || self.preview_scheduled_at.is_some()
+                                        {
+                                            ui.label(
+                                                egui::RichText::new("更新預覽中…")
+                                                    .small()
+                                                    .color(pal.muted),
+                                            );
+                                        }
+                                    });
                                     let hint = if self.tab == TabKind::Mosaic {
                                         "隨機拼接樣本（使用所有已標註圖片的圖塊）"
                                     } else {
@@ -627,7 +741,8 @@ impl VersionDialog {
                                     |ui| {
                                         if ui.button("重新隨機").clicked() {
                                             self.preview_seed += 1;
-                                            self.preview_dirty = true;
+                                            self.preview_gen += 1;
+                                            self.preview_scheduled_at = Some(0.0);
                                         }
                                         if self.tab == TabKind::Normal && ui.button("換一張圖片").clicked()
                                         {
@@ -705,7 +820,9 @@ impl VersionDialog {
                 });
 
                 if changed {
-                    self.preview_dirty = true;
+                    self.preview_gen += 1;
+                    self.preview_scheduled_at = Some(now + 0.12);
+                    ctx.request_repaint_after(std::time::Duration::from_millis(130));
                 }
             });
 

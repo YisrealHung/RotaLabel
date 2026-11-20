@@ -106,10 +106,10 @@ pub fn default_workers() -> usize {
     let n = std::thread::available_parallelism()
         .map(|v| v.get())
         .unwrap_or(1);
-    if n >= 4 {
-        (n / 2).max(1)
+    if n >= 2 {
+        n - 1
     } else {
-        n.max(1)
+        1
     }
 }
 
@@ -178,7 +178,7 @@ pub fn to_gray_rgb(img: &RgbImage) -> RgbImage {
     out
 }
 
-fn prepare(img: &RgbImage, cfg: &VersionConfig) -> (RgbImage, Mat3, u32, u32) {
+fn prepare<'a>(img: &'a RgbImage, cfg: &VersionConfig) -> (std::borrow::Cow<'a, RgbImage>, Mat3, u32, u32) {
     let (pre, pw, ph) = preprocess_matrix(
         img.width(),
         img.height(),
@@ -187,9 +187,9 @@ fn prepare(img: &RgbImage, cfg: &VersionConfig) -> (RgbImage, Mat3, u32, u32) {
         cfg.resize_h,
     );
     let prepared = if cfg.grayscale {
-        to_gray_rgb(img)
+        std::borrow::Cow::Owned(to_gray_rgb(img))
     } else {
-        img.clone()
+        std::borrow::Cow::Borrowed(img)
     };
     (prepared, pre, pw, ph)
 }
@@ -205,11 +205,19 @@ pub fn make_sample(
     let vis = cfg.min_visibility / 100.0;
     if !augmented {
         (
-            warp(&prepared, &pre, pw, ph),
+            warp(prepared.as_ref(), &pre, pw, ph),
             transform_annotations(anns, &pre, pw, ph, 0.0),
         )
     } else {
-        augment(&prepared, anns, &cfg.aug, rng, Some(&pre), vis, Some((pw, ph)))
+        augment(
+            prepared.as_ref(),
+            anns,
+            &cfg.aug,
+            rng,
+            Some(&pre),
+            vis,
+            Some((pw, ph)),
+        )
     }
 }
 
@@ -351,57 +359,139 @@ pub fn generate_version(
         }
     }
 
-    let total = tasks.len();
+    let total_outputs: usize = tasks.iter().map(|t| t.stems.len()).sum();
     if let Some(cb) = progress {
-        cb(0, total, "");
+        cb(0, total_outputs, "");
     }
     let used_split_keys: HashSet<String> = tasks.iter().map(|t| t.split.clone()).collect();
     prepare_dirs(&writers, &used_split_keys)?;
 
-    let n_workers = resolve_workers(cfg.workers, total);
+    let n_workers = resolve_workers(cfg.workers, total_outputs);
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(n_workers)
         .build()
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
 
     let done_counter = AtomicUsize::new(0);
-    let task_results: Vec<Option<std::io::Result<TaskResult>>> = pool.install(|| {
-        tasks
-            .par_iter()
-            .map(|t| {
-                if cancel_flag.map(|f| f.load(Ordering::Relaxed)).unwrap_or(false) {
-                    return None;
-                }
-                let res = (|| -> std::io::Result<TaskResult> {
-                    let Some(img) = imageio::imread(&t.path) else {
-                        return Ok((t.split.clone(), Vec::new()));
-                    };
-                    let mut rng = ChaCha8Rng::seed_from_u64(t.seed);
-                    let mut out_items = Vec::with_capacity(t.stems.len());
-                    for (k, out_stem) in t.stems.iter().enumerate() {
-                        if cancel_flag.map(|f| f.load(Ordering::Relaxed)).unwrap_or(false) {
-                            break;
-                        }
-                        let (out_img, out_anns) = make_sample(&img, &t.anns, cfg, &mut rng, k > 0);
-                        let w = out_img.width();
-                        let h = out_img.height();
-                        let fname = format!("{out_stem}.jpg");
-                        let jpg = imageio::encode_jpeg(&out_img, 95)?;
-                        for (_, wr) in &writers {
-                            wr.write_worker(&t.split, &fname, &jpg, w, h, &out_anns)?;
-                        }
-                        out_items.push((fname, w, h, out_anns));
+    let copy_seed = |base: u64, k: usize| -> u64 {
+        base.wrapping_add((k as u64).wrapping_mul(0x9E3779B97F4A7C15))
+    };
+
+    let task_results: Vec<Option<std::io::Result<TaskResult>>> = if tasks.len() < n_workers * 2 {
+        // Few source images with multiple copies: decode once and fan out every (image, copy) across all threads.
+        let decoded: Vec<Option<std::sync::Arc<RgbImage>>> = pool.install(|| {
+            tasks
+                .par_iter()
+                .map(|t| {
+                    if cancel_flag.map(|f| f.load(Ordering::Relaxed)).unwrap_or(false) {
+                        None
+                    } else {
+                        imageio::imread(&t.path).map(std::sync::Arc::new)
                     }
-                    Ok((t.split.clone(), out_items))
-                })();
-                let done = done_counter.fetch_add(1, Ordering::Relaxed) + 1;
-                if let Some(cb) = progress {
-                    cb(done, total, &t.name);
-                }
-                Some(res)
+                })
+                .collect()
+        });
+        struct CopyJob<'a> {
+            task: &'a TaskItem,
+            img: Option<std::sync::Arc<RgbImage>>,
+            k: usize,
+            out_stem: &'a str,
+            seed: u64,
+        }
+        let mut jobs = Vec::with_capacity(total_outputs);
+        for (t, img_opt) in tasks.iter().zip(decoded.into_iter()) {
+            for (k, out_stem) in t.stems.iter().enumerate() {
+                jobs.push(CopyJob {
+                    task: t,
+                    img: img_opt.clone(),
+                    k,
+                    out_stem,
+                    seed: copy_seed(t.seed, k),
+                });
+            }
+        }
+        let job_results: Vec<Option<std::io::Result<(String, Option<(String, u32, u32, Vec<Annotation>)>)>>> =
+            pool.install(|| {
+                jobs.par_iter()
+                    .map(|j| {
+                        if cancel_flag.map(|f| f.load(Ordering::Relaxed)).unwrap_or(false) {
+                            return None;
+                        }
+                        let res = (|| -> std::io::Result<(String, Option<(String, u32, u32, Vec<Annotation>)>)> {
+                            let Some(ref img) = j.img else {
+                                return Ok((j.task.split.clone(), None));
+                            };
+                            let mut rng = ChaCha8Rng::seed_from_u64(j.seed);
+                            let (out_img, out_anns) =
+                                make_sample(img.as_ref(), &j.task.anns, cfg, &mut rng, j.k > 0);
+                            let w = out_img.width();
+                            let h = out_img.height();
+                            let fname = format!("{}.jpg", j.out_stem);
+                            let jpg = imageio::encode_jpeg(&out_img, 95)?;
+                            for (_, wr) in &writers {
+                                wr.write_worker(&j.task.split, &fname, &jpg, w, h, &out_anns)?;
+                            }
+                            Ok((j.task.split.clone(), Some((fname, w, h, out_anns))))
+                        })();
+                        let done = done_counter.fetch_add(1, Ordering::Relaxed) + 1;
+                        if let Some(cb) = progress {
+                            cb(done, total_outputs, &j.task.name);
+                        }
+                        Some(res)
+                    })
+                    .collect()
+            });
+        job_results
+            .into_iter()
+            .map(|opt| {
+                opt.map(|r| {
+                    r.map(|(sp, item)| match item {
+                        Some(it) => (sp, vec![it]),
+                        None => (sp, Vec::new()),
+                    })
+                })
             })
             .collect()
-    });
+    } else {
+        pool.install(|| {
+            tasks
+                .par_iter()
+                .map(|t| {
+                    if cancel_flag.map(|f| f.load(Ordering::Relaxed)).unwrap_or(false) {
+                        return None;
+                    }
+                    let res = (|| -> std::io::Result<TaskResult> {
+                        let Some(img) = imageio::imread(&t.path) else {
+                            return Ok((t.split.clone(), Vec::new()));
+                        };
+                        let mut out_items = Vec::with_capacity(t.stems.len());
+                        for (k, out_stem) in t.stems.iter().enumerate() {
+                            if cancel_flag.map(|f| f.load(Ordering::Relaxed)).unwrap_or(false) {
+                                break;
+                            }
+                            let mut rng = ChaCha8Rng::seed_from_u64(copy_seed(t.seed, k));
+                            let (out_img, out_anns) =
+                                make_sample(&img, &t.anns, cfg, &mut rng, k > 0);
+                            let w = out_img.width();
+                            let h = out_img.height();
+                            let fname = format!("{out_stem}.jpg");
+                            let jpg = imageio::encode_jpeg(&out_img, 95)?;
+                            for (_, wr) in &writers {
+                                wr.write_worker(&t.split, &fname, &jpg, w, h, &out_anns)?;
+                            }
+                            out_items.push((fname, w, h, out_anns));
+                            let done = done_counter.fetch_add(1, Ordering::Relaxed) + 1;
+                            if let Some(cb) = progress {
+                                cb(done, total_outputs, &t.name);
+                            }
+                        }
+                        Ok((t.split.clone(), out_items))
+                    })();
+                    Some(res)
+                })
+                .collect()
+        })
+    };
 
     if cancel_flag.map(|f| f.load(Ordering::Relaxed)).unwrap_or(false)
         || task_results.iter().any(|r| r.is_none())
@@ -430,7 +520,7 @@ pub fn generate_version(
         wr.finish()?;
     }
     if let Some(cb) = progress {
-        cb(total, total, "");
+        cb(total_outputs, total_outputs, "");
     }
 
     let meta = serde_json::json!({
