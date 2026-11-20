@@ -128,7 +128,7 @@ def test_dota_side_file_next_to_image(tmp_path):
     assert (p.root / "img0.txt").read_text(encoding="utf-8").splitlines()[2].endswith("car 0")
 
 
-def test_side_file_never_overwrites_foreign_txt(tmp_path):
+def test_side_file_overwrites_in_place(tmp_path):
     root = tmp_path / "imgs"
     root.mkdir()
     for n in ("a.png", "b.jpg", "b.png"):
@@ -138,7 +138,7 @@ def test_side_file_never_overwrites_foreign_txt(tmp_path):
     for n in p.images:
         p.get(n).annotations = [BOX]
         p.save_annotations(n)
-    assert (root / "a.txt").read_text(encoding="utf-8") == "0 0.5 0.5 0.1 0.1\n"
+    assert (root / "a.txt").read_text(encoding="utf-8").startswith("imagesource:rotalabel")
     # shared stem -> full file name, so b.jpg and b.png don't clobber each other
     assert (root / "b.jpg.txt").exists() and (root / "b.png.txt").exists() and not (root / "b.txt").exists()
 
@@ -156,45 +156,42 @@ def _yolo_obb_folder(tmp_path):
     return root
 
 
-def test_yolo_obb_folder_is_loaded_and_edits_go_to_own_folder(tmp_path):
+def test_yolo_obb_folder_is_loaded_and_edits_overwrite_in_place(tmp_path):
     root = _yolo_obb_folder(tmp_path)
-    source = {f.name: f.read_bytes() for f in root.glob("*.txt")}
     p = Project.open(root)
     assert p.label_format == "yolo_obb"
-    assert p.output_dir == root / "rotalabel_labels"
+    assert p.output_dir is None
+    assert not (root / "rotalabel_labels").exists()
     assert p.class_names() == ["nail", "screw"]  # ids kept, no default "object" in front
     assert p.auto_imported == (2, 2)
     anns = p.get("a.png").annotations
     assert [a.cls for a in anns] == [1, 0]
     got = sorted(map(tuple, np.round(anns[0].corners() / [W, H], 6)))
     assert np.array(got) == pytest.approx(np.array([[0.1, 0.2], [0.1, 0.4], [0.3, 0.2], [0.3, 0.4]]))
-    # delete one box, add one on c -> YOLO-OBB files in the output folder
+    # delete one box, add one on c -> YOLO-OBB files overwritten in-place next to images
     p.get("a.png").annotations = anns[1:]
     p.save_annotations("a.png")
     ic = p.get("c.png")
     ic.width, ic.height = W, H
     ic.annotations = [BOX]
     p.save_annotations("c.png")
-    out = root / "rotalabel_labels"
-    assert (out / "a.txt").read_text(encoding="utf-8").split() == \
+    assert (root / "a.txt").read_text(encoding="utf-8").split() == \
         ["0", "0.5", "0.5", "0.7", "0.5", "0.7", "0.6", "0.5", "0.6"]
-    c = (out / "c.txt").read_text(encoding="utf-8").split()
+    c = (root / "c.txt").read_text(encoding="utf-8").split()
     assert c[0] == "0" and len(c) == 9
-    assert (out / "b.txt").read_text(encoding="utf-8") == ""
-    assert (out / "classes.txt").read_text(encoding="utf-8").split() == ["nail", "screw"]
-    # the source labels are never touched
-    assert {f.name: f.read_bytes() for f in root.glob("*.txt")} == source
+    assert (root / "b.txt").read_text(encoding="utf-8") == ""
+    assert (root / "classes.txt").read_text(encoding="utf-8").split() == ["nail", "screw"]
+    assert not (root / "rotalabel_labels").exists()
     # reopening keeps the format and the edits, without re-importing
     q = Project.open(root)
     assert q.label_format == "yolo_obb" and q.auto_imported == (0, 0)
     assert len(q.get("a.png").annotations) == 1
     q.add_class("bolt")
-    assert (out / "classes.txt").read_text(encoding="utf-8").split() == ["nail", "screw", "bolt"]
-    assert (root / "classes.txt").read_text(encoding="utf-8").split() == ["nail", "screw"]
+    assert (root / "classes.txt").read_text(encoding="utf-8").split() == ["nail", "screw", "bolt"]
 
 
 @pytest.mark.parametrize("with_classes_txt", [True, False])
-def test_dota_folder_is_loaded_and_edits_go_to_own_folder(tmp_path, with_classes_txt):
+def test_dota_folder_is_loaded_and_edits_overwrite_in_place(tmp_path, with_classes_txt):
     root = tmp_path / "imgs"
     root.mkdir()
     for n in ("a.jpg", "b.jpg", "c.jpg"):
@@ -206,20 +203,19 @@ def test_dota_folder_is_loaded_and_edits_go_to_own_folder(tmp_path, with_classes
                                 encoding="utf-8")
     (root / "b.txt").write_text("imagesource:GoogleEarth\ngsd:0.5\n10 10 50 10 50 30 10 30 nail 1\n",
                                 encoding="utf-8")
-    source = {f.name: f.read_bytes() for f in root.glob("*.txt")}
     p = Project.open(root)
-    assert p.label_format == "dota" and p.output_dir == root / "rotalabel_labels"
+    assert p.label_format == "dota" and p.output_dir is None
+    assert not (root / "rotalabel_labels").exists()
     assert p.auto_imported == (2, 3)
     assert p.class_names() == (["nail", "screw"] if with_classes_txt else ["screw", "nail"])
     a = p.get("a.jpg").annotations
     assert [p.class_names()[x.cls] for x in a] == ["screw", "nail"]
     assert a[0].corners().mean(axis=0) == pytest.approx([50, 50])
-    # edits are written as DOTA into the output folder; the source files stay untouched
+    # edits overwrite DOTA files in-place next to images
     p.get("a.jpg").annotations = a[:1]
     p.save_annotations("a.jpg")
-    lines = (root / "rotalabel_labels/a.txt").read_text(encoding="utf-8").splitlines()
+    lines = (root / "a.txt").read_text(encoding="utf-8").splitlines()
     assert lines[0] == "imagesource:rotalabel" and len(lines) == 3 and lines[2].split()[8:] == ["screw", "0"]
-    assert {f.name: f.read_bytes() for f in root.glob("*.txt")} == source
     q = Project.open(root)
     assert q.label_format == "dota" and q.auto_imported == (0, 0) and len(q.get("a.jpg").annotations) == 1
 
@@ -245,8 +241,9 @@ def test_label_output_format_and_folder_can_change(tmp_path):
     assert p.settings["label_dir"] == "v2"
     assert (root / "v2" / "a.txt").read_text(encoding="utf-8").split()[0] == "1"
     assert Project.open(root).output_dir == root / "v2"
-    with pytest.raises(ValueError):
-        p.set_label_output("yolo_obb", root)  # would mix outputs with the source labels
+    p.set_label_output("yolo_obb", root)  # setting to image folder itself is allowed (in-place)
+    assert p.settings["label_dir"] == ""
+    assert p.output_dir is None
 
 
 def test_yolo_obb_without_names_keeps_ids(tmp_path):

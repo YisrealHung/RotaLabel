@@ -119,7 +119,8 @@ def test_label_output_dialog_switches_format(window, tmp_path, monkeypatch):
     _make_images(folder, "a.png")
     (folder / "a.txt").write_text("0 0.1 0.1 0.5 0.1 0.5 0.3 0.1 0.3\n", encoding="utf-8")
     window.open_project(str(folder))
-    assert "YOLO-OBB → rotalabel_labels/" in window.windowTitle()
+    assert "YOLO-OBB → 圖片旁" in window.windowTitle()
+    assert not (folder / "rotalabel_labels").exists()
     from PySide6.QtWidgets import QComboBox, QDialog, QLineEdit, QMessageBox
 
     def fake_exec(dlg):
@@ -132,6 +133,34 @@ def test_label_output_dialog_switches_format(window, tmp_path, monkeypatch):
     assert (folder / "out_dota" / "a.txt").read_text(encoding="utf-8").startswith("imagesource:rotalabel")
     assert "DOTA → out_dota/" in window.windowTitle()
     assert (folder / "a.txt").read_text(encoding="utf-8") == "0 0.1 0.1 0.5 0.1 0.5 0.3 0.1 0.3\n"
+
+
+def test_in_place_overwrite_same_and_separate_folder(window, tmp_path):
+    # Case 1: images and labels in the same folder -> edits overwrite original .txt directly
+    same = tmp_path / "same"
+    _make_images(same, "a.png")
+    (same / "a.txt").write_text("0 0.1 0.1 0.5 0.1 0.5 0.3 0.1 0.3\n", encoding="utf-8")
+    window.open_project(str(same))
+    assert not (same / "rotalabel_labels").exists()
+    _add_box(window, cls=0)
+    lines = (same / "a.txt").read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 2  # original box + newly added box written back in-place
+
+    # Case 2: images and labels in separate folders -> edits overwrite imported label folder's .txt
+    imgs = tmp_path / "imgs"
+    lbls = tmp_path / "imgs_label"
+    _make_images(imgs, "b.png")
+    lbls.mkdir()
+    (lbls / "classes.txt").write_text("nail\n", encoding="utf-8")
+    (lbls / "b.txt").write_text("0 0.1 0.1 0.5 0.1 0.5 0.3 0.1 0.3\n", encoding="utf-8")
+    window.open_project(str(imgs))
+    importers.import_labels(window.project, lbls, overwrite=True)
+    window._reload_current()
+    _add_box(window, cls=0)
+    lbl_lines = (lbls / "b.txt").read_text(encoding="utf-8").strip().splitlines()
+    assert len(lbl_lines) == 2
+    assert not (imgs / "b.txt").exists()
+    assert not (imgs / "rotalabel_labels").exists()
 
 
 def test_label_display_modes(window, tmp_path):

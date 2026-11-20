@@ -60,10 +60,38 @@ def parse_label_file(path: Path, width: int, height: int, resolve_class) -> list
     return anns
 
 
+def _detect_format(path: Path) -> str | None:
+    lines = [l.split() for l in path.read_text(encoding="utf-8", errors="ignore").splitlines()]
+    lines = [t for t in lines if t and not t[0].startswith(("imagesource", "gsd"))]
+    if not lines:
+        return None
+    if all(len(t) == 9 and all(_is_num(v) for v in t) for t in lines):
+        return "yolo_obb"
+    if all(len(t) in (9, 10) and all(_is_num(v) for v in t[:8]) and not _is_num(t[8]) for t in lines):
+        return "dota"
+    return None
+
+
 def import_labels(project, label_dir: str | Path, overwrite: bool = True) -> tuple[int, int]:
     """Returns (images_updated, boxes_imported)."""
     label_dir = Path(label_dir)
     names = _read_names(label_dir)
+
+    # Remember where labels came from so future edits overwrite them in-place
+    try:
+        rel = label_dir.resolve().relative_to(project.root.resolve()).as_posix()
+        project.settings["label_dir"] = "" if rel == "." else rel
+    except ValueError:
+        project.settings["label_dir"] = str(label_dir.resolve())
+
+    detected_fmt = None
+    for name in project.images:
+        f = label_dir / (Path(name).stem + ".txt")
+        if f.exists():
+            detected_fmt = _detect_format(f)
+            if detected_fmt:
+                project.settings["label_format"] = detected_fmt
+                break
 
     def resolve_class(key):
         if isinstance(key, str):

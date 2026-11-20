@@ -77,16 +77,16 @@ class Project:
 
     @property
     def output_dir(self) -> Path | None:
-        """Folder for the side files, or None = DOTA next to the images (default for older projects)."""
-        d = self.settings.get("label_dir") or (DEFAULT_LABEL_DIR if self.label_format == YOLO_OBB else None)
-        if not d:
+        """Folder for the side files, or None = next to the images."""
+        d = self.settings.get("label_dir")
+        if not d or d == ".":
             return None
-        d = Path(d)
-        return d if d.is_absolute() else self.root / d
+        p = Path(d)
+        return p if p.is_absolute() else self.root / p
 
     def set_label_output(self, fmt: str, label_dir: str | Path) -> int:
         """Change the side file format / folder and rewrite every labeled image there.
-        Returns the number of files written. Files in a previous folder are left as they are."""
+        Returns the number of files written."""
         if fmt not in LABEL_FORMATS:
             raise ValueError(f"unknown label format: {fmt}")
         label_dir = Path(label_dir)
@@ -94,10 +94,9 @@ class Project:
             label_dir = label_dir.resolve().relative_to(self.root.resolve())  # keep it portable
         except ValueError:
             pass
-        if str(label_dir) in ("", "."):
-            raise ValueError("the output folder must not be the image folder itself")
+        s = label_dir.as_posix()
         self.settings["label_format"] = fmt
-        self.settings["label_dir"] = label_dir.as_posix()
+        self.settings["label_dir"] = "" if s in ("", ".") else s
         self.save_meta()
         return self.sync_label_files()
 
@@ -175,16 +174,14 @@ class Project:
         return None
 
     def _adopt_label_files(self, fmt: str) -> None:
-        """Load the YOLO-OBB / DOTA files next to the images (left untouched); edits are written in the
-        same format to <folder>/rotalabel_labels/. YOLO-OBB keeps class ids, DOTA class names; both
-        take the class order from classes.txt when there is one."""
+        """Load the YOLO-OBB / DOTA files next to the images and save future edits back in-place."""
         from . import importers  # local import: importers imports this module's siblings
         names = importers._read_names(self.root)
         default_only = [c.name for c in self.classes] in ([], ["object"])
         if default_only:
             self.classes = [ClassDef(n, default_color(i)) for i, n in enumerate(names or [])]
         self.settings["label_format"] = fmt
-        self.settings["label_dir"] = DEFAULT_LABEL_DIR
+        self.settings["label_dir"] = ""
         self.settings["label_source"] = "."  # where the original labels came from (informational)
         self.save_meta()
         self.auto_imported = importers.import_labels(self, self.root, overwrite=True)
@@ -194,9 +191,9 @@ class Project:
         d = {"version": 1, "classes": [{"name": c.name, "color": c.color} for c in self.classes],
              "settings": self.settings}
         (self.meta_dir / "project.json").write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
-        out = self.output_dir
-        if self.label_format == YOLO_OBB and out is not None and self.classes:
+        if self.label_format == YOLO_OBB and self.classes:
             # keeps the YOLO class ids readable by other tools (and by our importer)
+            out = self.output_dir or self.root
             out.mkdir(parents=True, exist_ok=True)
             (out / "classes.txt").write_text("\n".join(self.class_names()) + "\n", encoding="utf-8")
 
@@ -227,9 +224,8 @@ class Project:
         return self._label_path(self.output_dir or self.root, name)
 
     def write_label_file(self, name: str) -> bool:
-        """Write the image's boxes as DOTA (pixel corners, class name, difficult) or YOLO-OBB. Next to the
-        images, returns False when an existing .txt that we did not write is in the way (it is left
-        untouched); files in the output folder are always ours."""
+        """Write the image's boxes as DOTA (pixel corners, class name, difficult) or YOLO-OBB,
+        directly overwriting the label file in the source/output folder."""
         ia = self.annotations.get(name)
         if ia is None:
             return False
@@ -242,13 +238,6 @@ class Project:
         if self.label_format == YOLO_OBB:
             return self._write_yolo_obb(name, ia)
         f = self.label_file(name)
-        if out is None and f.exists():
-            try:
-                with f.open(encoding="utf-8", errors="ignore") as fh:
-                    if fh.readline().strip() != SIDECAR_HEADER:
-                        return False
-            except OSError:
-                return False
         lines = [SIDECAR_HEADER, "gsd:null"]
         for a in ia.annotations:
             cname = self.classes[a.cls].name if 0 <= a.cls < len(self.classes) else f"class_{a.cls}"

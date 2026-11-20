@@ -591,6 +591,7 @@ class MainWindow(QMainWindow):
             QApplication.restoreOverrideCursor()
         self.class_panel.reload()
         self._reload_current()
+        self._update_title()
         QMessageBox.information(self, "匯入標註", f"已匯入 {n_img} 張圖片、{n_box} 個框")
 
     # ------------------------------------------------------------------ label output
@@ -615,7 +616,7 @@ class MainWindow(QMainWindow):
         for key, label in LABEL_FORMATS.items():
             fmt.addItem(label, key)
         fmt.setCurrentIndex(max(0, fmt.findData(p.label_format)))
-        path = QLineEdit(str(p.output_dir or p.root / DEFAULT_LABEL_DIR))
+        path = QLineEdit(str(p.output_dir or p.root))
         browse = QPushButton("瀏覽…")
 
         def pick():
