@@ -24,7 +24,18 @@ use crate::exporters::FORMAT_OPTIONS;
 use crate::imageio;
 use crate::model::{default_color, Annotation, ClassDef};
 use crate::project_io::Project;
+use crate::ui::canvas::{CanvasState, LabelMode};
 use crate::ui::theme::{color_lightness, parse_hex_color, Palette};
+
+/// Returns `(show_box, show_label)` for an augmentation preview annotation.
+pub fn preview_visibility(mode: LabelMode, is_hovered: bool) -> (bool, bool) {
+    match mode {
+        LabelMode::All => (true, true),
+        LabelMode::Selected => (true, is_hovered),
+        LabelMode::None => (true, false),
+        LabelMode::Hidden => (false, false),
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TabKind {
@@ -489,7 +500,13 @@ impl VersionDialog {
     }
 
     /// Returns `false` if the dialog should close.
-    pub fn show(&mut self, ctx: &egui::Context, project: &mut Project, pal: &Palette) -> bool {
+    pub fn show(
+        &mut self,
+        ctx: &egui::Context,
+        project: &mut Project,
+        pal: &Palette,
+        label_mode: &mut LabelMode,
+    ) -> bool {
         let mut keep_open = true;
 
         // Check worker completion
@@ -517,6 +534,14 @@ impl VersionDialog {
                 self.save_settings(project);
                 return false;
             }
+        }
+
+        if self.result_popup.is_none()
+            && self.warn_msg.is_none()
+            && !ctx.wants_keyboard_input()
+            && ctx.input(|i| !i.modifiers.ctrl && i.key_pressed(Key::L))
+        {
+            *label_mode = label_mode.cycle();
         }
 
         if self.preview_dirty {
@@ -608,11 +633,28 @@ impl VersionDialog {
                                         {
                                             self.next_preview_image(project);
                                         }
+                                        ui.menu_button(
+                                            format!("顯示：{}", label_mode.short_label()),
+                                            |ui| {
+                                                for m in LabelMode::ALL_MODES {
+                                                    if ui
+                                                        .selectable_label(
+                                                            *label_mode == m,
+                                                            m.long_label(),
+                                                        )
+                                                        .clicked()
+                                                    {
+                                                        ui.close_menu();
+                                                        *label_mode = m;
+                                                    }
+                                                }
+                                            },
+                                        );
                                     },
                                 );
                             });
                             ui.add_space(6.0);
-                            self.ui_preview_canvas(ui, project, pal);
+                            self.ui_preview_canvas(ui, project, pal, *label_mode);
                         },
                     );
                 });
@@ -644,10 +686,10 @@ impl VersionDialog {
                             !running,
                             egui::Button::new(
                                 egui::RichText::new("產生版本")
-                                    .color(pal.accent_text)
+                                    .color(if running { pal.muted } else { pal.accent_text })
                                     .strong(),
                             )
-                            .fill(if running { pal.border } else { pal.accent }),
+                            .fill(if running { pal.panel2 } else { pal.accent }),
                         );
                         if gen_btn.clicked() {
                             self.start_generate(ctx, project);
@@ -1100,7 +1142,13 @@ impl VersionDialog {
         changed
     }
 
-    fn ui_preview_canvas(&self, ui: &mut egui::Ui, project: &Project, pal: &Palette) {
+    fn ui_preview_canvas(
+        &self,
+        ui: &mut egui::Ui,
+        project: &Project,
+        pal: &Palette,
+        label_mode: LabelMode,
+    ) {
         let avail = ui.available_size();
         let (rect, _) = ui.allocate_exact_size(avail, egui::Sense::hover());
         let painter = ui.painter_at(rect);
@@ -1122,8 +1170,16 @@ impl VersionDialog {
             return;
         }
 
+        let hover_pos = ui.input(|i| i.pointer.hover_pos());
         if self.preview_tiles.len() == 1 {
-            self.paint_tile(&painter, rect.shrink(6.0), &self.preview_tiles[0], &project.classes);
+            self.paint_tile(
+                &painter,
+                rect.shrink(6.0),
+                &self.preview_tiles[0],
+                &project.classes,
+                label_mode,
+                hover_pos,
+            );
             return;
         }
 
@@ -1140,7 +1196,7 @@ impl VersionDialog {
                 ),
                 Vec2::new(tile_w, tile_h),
             );
-            self.paint_tile(&painter, sub, tile, &project.classes);
+            self.paint_tile(&painter, sub, tile, &project.classes, label_mode, hover_pos);
         }
     }
 
@@ -1150,6 +1206,8 @@ impl VersionDialog {
         area: Rect,
         tile: &PreviewTile,
         classes: &[ClassDef],
+        label_mode: LabelMode,
+        hover_pos: Option<Pos2>,
     ) {
         if tile.img_w == 0 || tile.img_h == 0 {
             return;
@@ -1164,16 +1222,55 @@ impl VersionDialog {
             Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
             Color32::WHITE,
         );
-        for a in &tile.boxes {
+        if label_mode == LabelMode::Hidden {
+            return;
+        }
+
+        let hovered_idx = if label_mode == LabelMode::Selected {
+            hover_pos.and_then(|hp| {
+                if !img_rect.contains(hp) || scale <= 0.0 {
+                    return None;
+                }
+                let pt = [
+                    ((hp.x - img_rect.min.x) / scale) as f64,
+                    ((hp.y - img_rect.min.y) / scale) as f64,
+                ];
+                let mut best: Option<usize> = None;
+                let mut best_area = f64::INFINITY;
+                for (i, a) in tile.boxes.iter().enumerate() {
+                    let lp = CanvasState::to_local(a, pt);
+                    if lp[0].abs() <= a.w / 2.0 && lp[1].abs() <= a.h / 2.0 {
+                        let area = a.w * a.h;
+                        if best.is_none() || area < best_area {
+                            best = Some(i);
+                            best_area = area;
+                        }
+                    }
+                }
+                best
+            })
+        } else {
+            None
+        };
+
+        let class_color = |cls: usize| {
             let hex = classes
-                .get(a.cls)
+                .get(cls)
                 .map(|c| c.color.as_str())
                 .unwrap_or("#00ff00");
-            let col = if a.cls < classes.len() {
+            if cls < classes.len() {
                 parse_hex_color(hex)
             } else {
-                parse_hex_color(&default_color(a.cls))
-            };
+                parse_hex_color(&default_color(cls))
+            }
+        };
+
+        for (i, a) in tile.boxes.iter().enumerate() {
+            let (show_box, _) = preview_visibility(label_mode, hovered_idx == Some(i));
+            if !show_box {
+                continue;
+            }
+            let col = class_color(a.cls);
             let sc: Vec<Pos2> = a
                 .corners()
                 .iter()
@@ -1184,7 +1281,20 @@ impl VersionDialog {
                     )
                 })
                 .collect();
-            painter.add(egui::Shape::closed_line(sc.clone(), Stroke::new(1.5_f32, col)));
+            painter.add(egui::Shape::closed_line(sc, Stroke::new(1.5_f32, col)));
+        }
+
+        for (i, a) in tile.boxes.iter().enumerate() {
+            let (_, show_label) = preview_visibility(label_mode, hovered_idx == Some(i));
+            if !show_label {
+                continue;
+            }
+            let col = class_color(a.cls);
+            let first = a.corners()[0];
+            let anchor = Pos2::new(
+                img_rect.min.x + (first[0] as f32) * scale,
+                img_rect.min.y + (first[1] as f32) * scale,
+            );
             let label = classes
                 .get(a.cls)
                 .map(|c| c.name.as_str())
@@ -1194,8 +1304,9 @@ impl VersionDialog {
             } else {
                 Color32::WHITE
             };
-            let pos = Pos2::new(sc[0].x, (sc[0].y - 12.0).max(img_rect.min.y));
-            let galley = painter.layout_no_wrap(label.to_string(), FontId::proportional(10.0), text_col);
+            let pos = Pos2::new(anchor.x, (anchor.y - 12.0).max(img_rect.min.y));
+            let galley =
+                painter.layout_no_wrap(label.to_string(), FontId::proportional(10.0), text_col);
             let bg_rect = Rect::from_min_size(pos, galley.size() + Vec2::new(4.0, 2.0));
             painter.rect_filled(bg_rect, CornerRadius::ZERO, col);
             painter.galley(pos + Vec2::new(2.0, 1.0), galley, text_col);

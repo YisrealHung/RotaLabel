@@ -74,31 +74,81 @@ pub fn light_palette() -> Palette {
     }
 }
 
-pub fn apply_theme(ctx: &egui::Context, dark: bool) -> Palette {
-    let pal = if dark { dark_palette() } else { light_palette() };
+pub fn build_visuals(dark: bool, pal: &Palette) -> Visuals {
     let mut visuals = if dark { Visuals::dark() } else { Visuals::light() };
-    visuals.window_fill = pal.panel;
+    visuals.dark_mode = dark;
     visuals.panel_fill = pal.bg;
+    visuals.window_fill = pal.panel;
+    visuals.window_stroke = Stroke::new(1.0_f32, pal.border);
+    visuals.window_corner_radius = CornerRadius::same(8);
+    visuals.menu_corner_radius = CornerRadius::same(6);
     visuals.extreme_bg_color = pal.input;
     visuals.faint_bg_color = pal.panel2;
+    visuals.code_bg_color = pal.panel2;
     visuals.override_text_color = Some(pal.text);
+    visuals.hyperlink_color = pal.accent;
+    visuals.warn_fg_color = pal.warn;
+    visuals.text_cursor.stroke = Stroke::new(2.0_f32, pal.accent);
     visuals.selection.bg_fill = pal.selection;
-    visuals.selection.stroke = Stroke::new(1.0_f32, pal.accent);
+    // Selected `SelectableLabel` uses `selection.stroke.color` for text.
+    visuals.selection.stroke = Stroke::new(1.0_f32, pal.text);
+
+    let hover_fill = if dark {
+        parse_hex_color("#363942")
+    } else {
+        parse_hex_color("#e2e5ec")
+    };
+    let cr = CornerRadius::same(4);
+
     visuals.widgets.noninteractive.bg_fill = pal.panel;
+    visuals.widgets.noninteractive.weak_bg_fill = pal.panel;
     visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, pal.border);
     visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, pal.text);
+    visuals.widgets.noninteractive.corner_radius = cr;
+
     visuals.widgets.inactive.bg_fill = pal.panel2;
+    visuals.widgets.inactive.weak_bg_fill = pal.panel2;
     visuals.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, pal.border);
     visuals.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, pal.text);
-    visuals.widgets.hovered.bg_fill = pal.panel2;
+    visuals.widgets.inactive.corner_radius = cr;
+
+    visuals.widgets.hovered.bg_fill = hover_fill;
+    visuals.widgets.hovered.weak_bg_fill = hover_fill;
     visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, pal.accent);
-    visuals.widgets.hovered.fg_stroke = Stroke::new(1.0_f32, pal.text);
+    visuals.widgets.hovered.fg_stroke = Stroke::new(1.5_f32, pal.text);
+    visuals.widgets.hovered.corner_radius = cr;
+
     visuals.widgets.active.bg_fill = pal.selection;
+    visuals.widgets.active.weak_bg_fill = pal.selection;
     visuals.widgets.active.bg_stroke = Stroke::new(1.0_f32, pal.accent);
-    visuals.widgets.active.fg_stroke = Stroke::new(1.0_f32, pal.text);
-    visuals.window_corner_radius = CornerRadius::same(8);
-    ctx.set_visuals(visuals);
-    pal
+    visuals.widgets.active.fg_stroke = Stroke::new(1.5_f32, pal.text);
+    visuals.widgets.active.corner_radius = cr;
+
+    visuals.widgets.open.bg_fill = pal.panel2;
+    visuals.widgets.open.weak_bg_fill = pal.panel2;
+    visuals.widgets.open.bg_stroke = Stroke::new(1.0_f32, pal.accent);
+    visuals.widgets.open.fg_stroke = Stroke::new(1.0_f32, pal.text);
+    visuals.widgets.open.corner_radius = cr;
+
+    visuals
+}
+
+pub fn apply_theme(ctx: &egui::Context, dark: bool) -> Palette {
+    let dark_pal = dark_palette();
+    let light_pal = light_palette();
+    ctx.set_visuals_of(egui::Theme::Dark, build_visuals(true, &dark_pal));
+    ctx.set_visuals_of(egui::Theme::Light, build_visuals(false, &light_pal));
+    ctx.set_theme(if dark {
+        egui::Theme::Dark
+    } else {
+        egui::Theme::Light
+    });
+    ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(if dark {
+        egui::SystemTheme::Dark
+    } else {
+        egui::SystemTheme::Light
+    }));
+    if dark { dark_pal } else { light_pal }
 }
 
 pub fn color_lightness(c: Color32) -> f32 {

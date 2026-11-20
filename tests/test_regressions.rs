@@ -11,6 +11,8 @@ use rotalabel::importers;
 use rotalabel::model::{Annotation, BoxKind};
 use rotalabel::project_io::Project;
 use rotalabel::ui::canvas::{CanvasState, DragState, HandleId, LabelMode};
+use rotalabel::ui::theme::{apply_theme, dark_palette, light_palette};
+use rotalabel::ui::version_dialog::preview_visibility;
 
 fn make_images(folder: &Path, names: &[&str]) {
     std::fs::create_dir_all(folder).unwrap();
@@ -222,4 +224,57 @@ fn test_in_place_overwrite_same_and_separate_folder() {
     );
     assert!(!imgs.join("b.txt").exists());
     assert!(!imgs.join("rotalabel_labels").exists());
+}
+
+#[test]
+fn test_theme_dark_and_light_override_system_theme() {
+    let ctx = egui::Context::default();
+
+    let dpal = apply_theme(&ctx, true);
+    let _ = ctx.run(
+        egui::RawInput {
+            system_theme: Some(egui::Theme::Light),
+            ..Default::default()
+        },
+        |_| {},
+    );
+    assert_eq!(ctx.theme(), egui::Theme::Dark);
+    let dv = ctx.style().visuals.clone();
+    assert!(dv.dark_mode);
+    assert_eq!(dv.panel_fill, dark_palette().bg);
+    assert_eq!(dv.window_fill, dpal.panel);
+    assert_eq!(dv.widgets.noninteractive.weak_bg_fill, dpal.panel);
+    assert_eq!(dv.widgets.inactive.weak_bg_fill, dpal.panel2);
+    assert_eq!(dv.widgets.open.weak_bg_fill, dpal.panel2);
+    assert_eq!(dv.selection.stroke.color, dpal.text);
+
+    let lpal = apply_theme(&ctx, false);
+    let _ = ctx.run(
+        egui::RawInput {
+            system_theme: Some(egui::Theme::Dark),
+            ..Default::default()
+        },
+        |_| {},
+    );
+    assert_eq!(ctx.theme(), egui::Theme::Light);
+    let lv = ctx.style().visuals.clone();
+    assert!(!lv.dark_mode);
+    assert_eq!(lv.panel_fill, light_palette().bg);
+    assert_eq!(lv.window_fill, lpal.panel);
+    assert_eq!(lv.widgets.noninteractive.weak_bg_fill, lpal.panel);
+    assert_eq!(lv.widgets.inactive.weak_bg_fill, lpal.panel2);
+    assert_eq!(lv.widgets.open.weak_bg_fill, lpal.panel2);
+    assert_eq!(lv.selection.stroke.color, lpal.text);
+}
+
+#[test]
+fn test_preview_visibility_matches_label_mode() {
+    assert_eq!(preview_visibility(LabelMode::All, false), (true, true));
+    assert_eq!(preview_visibility(LabelMode::All, true), (true, true));
+    assert_eq!(preview_visibility(LabelMode::Selected, false), (true, false));
+    assert_eq!(preview_visibility(LabelMode::Selected, true), (true, true));
+    assert_eq!(preview_visibility(LabelMode::None, false), (true, false));
+    assert_eq!(preview_visibility(LabelMode::None, true), (true, false));
+    assert_eq!(preview_visibility(LabelMode::Hidden, false), (false, false));
+    assert_eq!(preview_visibility(LabelMode::Hidden, true), (false, false));
 }

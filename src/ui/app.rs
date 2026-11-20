@@ -745,16 +745,23 @@ impl RotaLabelApp {
                 });
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let gen_enabled = self.project.is_some();
                     let gen_btn = ui
                         .add_enabled(
-                            self.project.is_some(),
+                            gen_enabled,
                             egui::Button::new(
-                                RichText::new("產生資料集").color(self.pal.accent_text).strong(),
+                                RichText::new("產生資料集")
+                                    .color(if gen_enabled {
+                                        self.pal.accent_text
+                                    } else {
+                                        self.pal.muted
+                                    })
+                                    .strong(),
                             )
-                            .fill(if self.project.is_some() {
+                            .fill(if gen_enabled {
                                 self.pal.accent
                             } else {
-                                self.pal.border
+                                self.pal.panel2
                             }),
                         )
                         .on_hover_text("產生資料集版本：切分、擴增、匯出 (Ctrl+E)");
@@ -778,6 +785,11 @@ impl RotaLabelApp {
     fn ui_left_panel(&mut self, ctx: &egui::Context) {
         let mut clicked_idx: Option<usize> = None;
         egui::SidePanel::left("images_panel")
+            .frame(
+                egui::Frame::side_top_panel(&ctx.style())
+                    .fill(self.pal.panel)
+                    .inner_margin(egui::Margin::same(8)),
+            )
             .resizable(true)
             .default_width(250.0)
             .min_width(220.0)
@@ -907,7 +919,11 @@ impl RotaLabelApp {
                     let pct = if total > 0 { done * 100 / total } else { 0 };
                     ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
                         let frac = if total > 0 { done as f32 / total as f32 } else { 0.0 };
-                        ui.add(egui::ProgressBar::new(frac).desired_height(6.0));
+                        ui.add(
+                            egui::ProgressBar::new(frac)
+                                .desired_height(6.0)
+                                .fill(self.pal.accent),
+                        );
                         ui.label(
                             RichText::new(format!("已標註 {done} / {total} 張（{pct}%）· {boxes} 個框"))
                                 .small()
@@ -932,6 +948,11 @@ impl RotaLabelApp {
         let mut select_ann: Option<usize> = None;
 
         egui::SidePanel::right("right_panel")
+            .frame(
+                egui::Frame::side_top_panel(&ctx.style())
+                    .fill(self.pal.panel)
+                    .inner_margin(egui::Margin::same(8)),
+            )
             .resizable(true)
             .default_width(295.0)
             .min_width(260.0)
@@ -1627,11 +1648,15 @@ impl RotaLabelApp {
 
         // Version dialog
         if let Some(mut dlg) = self.version_dialog.take() {
+            let mut mode = self.canvas.label_mode;
             let still_open = if let Some(ref mut p) = self.project {
-                dlg.show(ctx, p, &self.pal)
+                dlg.show(ctx, p, &self.pal, &mut mode)
             } else {
                 false
             };
+            if mode != self.canvas.label_mode {
+                self.set_label_mode(ctx, mode);
+            }
             if still_open {
                 self.version_dialog = Some(dlg);
             }
